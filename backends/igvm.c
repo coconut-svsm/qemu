@@ -101,17 +101,20 @@ static int directive_vp_context(struct igvm_context *ctx, int i,
 static int directive_parameter_area(struct igvm_context *ctx, int i,
                                const uint8_t *header_data, Error **errp);
 static int directive_parameter_insert(struct igvm_context *ctx, int i,
-                                const uint8_t *header_data, Error **errp);
+                               const uint8_t *header_data, Error **errp);
 static int directive_memory_map(struct igvm_context *ctx, int i,
-                                    const uint8_t *header_data, Error **errp);
+                               const uint8_t *header_data, Error **errp);
 static int directive_vp_count(struct igvm_context *ctx, int i,
-                                      const uint8_t *header_data, Error **errp);
+                               const uint8_t *header_data, Error **errp);
 static int directive_environment_info(struct igvm_context *ctx, int i,
-                                const uint8_t *header_data, Error **errp);
+                               const uint8_t *header_data, Error **errp);
 static int directive_required_memory(struct igvm_context *ctx, int i,
-                              const uint8_t *header_data, Error **errp);
+                               const uint8_t *header_data, Error **errp);
 static int directive_snp_id_block(struct igvm_context *ctx, int i,
-                                      const uint8_t *header_data, Error **errp);
+                               const uint8_t *header_data, Error **errp);
+
+static int initialization_guest_policy(struct igvm_context *ctx, int i,
+                               const uint8_t *header_data, Error **errp);
 
 struct IGVMHandler {
     uint32_t type;
@@ -130,7 +133,7 @@ static struct IGVMHandler handlers[] = {
     { IGVM_VHT_ENVIRONMENT_INFO_PARAMETER, HEADER_SECTION_DIRECTIVE, directive_environment_info },
     { IGVM_VHT_REQUIRED_MEMORY, HEADER_SECTION_DIRECTIVE, directive_required_memory },
     { IGVM_VHT_SNP_ID_BLOCK, HEADER_SECTION_DIRECTIVE, directive_snp_id_block },
-
+    { IGVM_VHT_GUEST_POLICY, HEADER_SECTION_INITIALIZATION, initialization_guest_policy },
 };
 
 static int handle(uint32_t type, struct igvm_context *ctx, int i, Error **errp)
@@ -682,6 +685,18 @@ static int directive_snp_id_block(struct igvm_context *ctx, int i,
                72);
     }
 
+    return 0;
+}
+
+static int initialization_guest_policy(struct igvm_context *ctx, int i,
+                                     const uint8_t *header_data, Error **errp)
+{
+    const IGVM_VHS_GUEST_POLICY *guest =
+        (const IGVM_VHS_GUEST_POLICY *)header_data;
+
+    if (guest->compatibility_mask & ctx->compatibility_mask) {
+        ctx->sev_policy = guest->policy;
+    }
     return 0;
 }
 

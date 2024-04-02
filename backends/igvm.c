@@ -35,82 +35,133 @@ typedef struct IgvmParameterData {
     uint32_t index;
 } IgvmParameterData;
 
-static QTAILQ_HEAD(, IgvmParameterData) parameter_data;
+/*
+ * Some directives are specific individual confidential computing platforms.
+ * Define required types for each of those platforms here.
+ */
 
-static int directive_page_data(ConfidentialGuestSupport *cgs, int i,
-                               uint32_t compatibility_mask,
+/* SEV/SEV-ES/SEV-SNP */
+struct QEMU_PACKED sev_id_block {
+	uint8_t ld[48];
+	uint8_t family_id[16];
+	uint8_t image_id[16];
+	uint32_t version;
+	uint32_t guest_svn;
+	uint64_t policy;
+};
+
+struct QEMU_PACKED sev_id_authentication {
+	uint32_t id_key_alg;
+	uint32_t auth_key_algo;
+	uint8_t reserved[56];
+	uint8_t id_block_sig[512];
+	uint8_t id_key[1028];
+	uint8_t reserved2[60];
+	uint8_t id_key_sig[512];
+	uint8_t author_key[1028];
+	uint8_t reserved3[892];
+};
+
+struct igvm_context {
+    /*
+     * Compatibility mask that is used to check if IGVM directives apply
+     * to the current platform.
+     */
+    uint32_t compatibility_mask;
+
+    /*
+     * IGVM definition of the current platform type.
+     */
+    IgvmPlatformType platform_type;
+
+    /*
+     * The ConfidentialGuestSupport object that is used to process directives
+     * in the IGVM file.
+     */
+    ConfidentialGuestSupport *cgs;
+
+    /*
+     * For SEV platforms, optionally contains the ID block and authentication
+     * that should be verified by the guest.
+     */
+    struct sev_id_block *id_block;
+    struct sev_id_authentication *id_auth;
+
+    /* Define the guest policy for SEV guests */
+    uint64_t sev_policy;
+
+    /* List of all parameters to populate in the guest */
+    QTAILQ_HEAD(, IgvmParameterData) parameter_data;
+};
+
+static int directive_page_data(struct igvm_context *ctx, int i,
                                const uint8_t *header_data, Error **errp);
-static int directive_vp_context(ConfidentialGuestSupport *cgs, int i,
-                                uint32_t compatibility_mask,
+static int directive_vp_context(struct igvm_context *ctx, int i,
+                               const uint8_t *header_data, Error **errp);
+static int directive_parameter_area(struct igvm_context *ctx, int i,
+                               const uint8_t *header_data, Error **errp);
+static int directive_parameter_insert(struct igvm_context *ctx, int i,
                                 const uint8_t *header_data, Error **errp);
-static int directive_parameter_area(ConfidentialGuestSupport *cgs, int i,
-                                    uint32_t compatibility_mask,
+static int directive_memory_map(struct igvm_context *ctx, int i,
                                     const uint8_t *header_data, Error **errp);
-static int directive_parameter_insert(ConfidentialGuestSupport *cgs, int i,
-                                      uint32_t compatibility_mask,
+static int directive_vp_count(struct igvm_context *ctx, int i,
                                       const uint8_t *header_data, Error **errp);
-static int directive_memory_map(ConfidentialGuestSupport *cgs, int i,
-                                uint32_t compatibility_mask,
+static int directive_environment_info(struct igvm_context *ctx, int i,
                                 const uint8_t *header_data, Error **errp);
-static int directive_vp_count(ConfidentialGuestSupport *cgs, int i,
-                              uint32_t compatibility_mask,
+static int directive_required_memory(struct igvm_context *ctx, int i,
                               const uint8_t *header_data, Error **errp);
-static int directive_environment_info(ConfidentialGuestSupport *cgs, int i,
-                                      uint32_t compatibility_mask,
+static int directive_snp_id_block(struct igvm_context *ctx, int i,
                                       const uint8_t *header_data, Error **errp);
-static int directive_required_memory(ConfidentialGuestSupport *cgs, int i,
-                                     uint32_t compatibility_mask,
-                                     const uint8_t *header_data, Error **errp);
 
-struct IGVMDirectiveHandler {
+struct IGVMHandler {
     uint32_t type;
-    int (*handler)(ConfidentialGuestSupport *cgs, int i,
-                   uint32_t compatibility_mask, const uint8_t *header_data,
-                   Error **errp);
+    uint32_t section;
+    int (*handler)(struct igvm_context *ctx, int i,
+                               const uint8_t *header_data, Error **errp);
 };
 
-static struct IGVMDirectiveHandler directive_handlers[] = {
-    { IGVM_VHT_PAGE_DATA, directive_page_data },
-    { IGVM_VHT_VP_CONTEXT, directive_vp_context },
-    { IGVM_VHT_PARAMETER_AREA, directive_parameter_area },
-    { IGVM_VHT_PARAMETER_INSERT, directive_parameter_insert },
-    { IGVM_VHT_MEMORY_MAP, directive_memory_map },
-    { IGVM_VHT_VP_COUNT_PARAMETER, directive_vp_count },
-    { IGVM_VHT_ENVIRONMENT_INFO_PARAMETER, directive_environment_info },
-    { IGVM_VHT_REQUIRED_MEMORY, directive_required_memory },
+static struct IGVMHandler handlers[] = {
+    { IGVM_VHT_PAGE_DATA, HEADER_SECTION_DIRECTIVE, directive_page_data },
+    { IGVM_VHT_VP_CONTEXT, HEADER_SECTION_DIRECTIVE, directive_vp_context },
+    { IGVM_VHT_PARAMETER_AREA, HEADER_SECTION_DIRECTIVE, directive_parameter_area },
+    { IGVM_VHT_PARAMETER_INSERT, HEADER_SECTION_DIRECTIVE, directive_parameter_insert },
+    { IGVM_VHT_MEMORY_MAP, HEADER_SECTION_DIRECTIVE, directive_memory_map },
+    { IGVM_VHT_VP_COUNT_PARAMETER, HEADER_SECTION_DIRECTIVE, directive_vp_count },
+    { IGVM_VHT_ENVIRONMENT_INFO_PARAMETER, HEADER_SECTION_DIRECTIVE, directive_environment_info },
+    { IGVM_VHT_REQUIRED_MEMORY, HEADER_SECTION_DIRECTIVE, directive_required_memory },
+    { IGVM_VHT_SNP_ID_BLOCK, HEADER_SECTION_DIRECTIVE, directive_snp_id_block },
+
 };
 
-static int directive(uint32_t type, ConfidentialGuestSupport *cgs, int i,
-                      uint32_t compatibility_mask, Error **errp)
+static int handle(uint32_t type, struct igvm_context *ctx, int i, Error **errp)
 {
     size_t handler;
     IgvmHandle header_handle;
     const uint8_t *header_data;
     int result;
 
-    for (handler = 0; handler < (sizeof(directive_handlers) /
-                                 sizeof(struct IGVMDirectiveHandler));
+    for (handler = 0; handler < (sizeof(handlers) /
+                                 sizeof(struct IGVMHandler));
          ++handler) {
-        if (directive_handlers[handler].type == type) {
+        if (handlers[handler].type == type) {
             header_handle =
-                igvm_get_header(cgs->igvm, HEADER_SECTION_DIRECTIVE, i);
+                igvm_get_header(ctx->cgs->igvm, handlers[handler].section, i);
             if (header_handle < 0) {
                 error_setg(
                     errp,
-                    "IGVM file is invalid: Failed to read directive header (code: %d)",
+                    "IGVM file is invalid: Failed to read header (code: %d)",
                     (int)header_handle);
                 return -1;
             }
-            header_data = igvm_get_buffer(cgs->igvm, header_handle) +
+            header_data = igvm_get_buffer(ctx->cgs->igvm, header_handle) +
                           sizeof(IGVM_VHS_VARIABLE_HEADER);
-            result = directive_handlers[handler].handler(cgs, i, compatibility_mask,
-                                                header_data, errp);
-            igvm_free_buffer(cgs->igvm, header_handle);
+            result = handlers[handler].handler(ctx, i, header_data, errp);
+            igvm_free_buffer(ctx->cgs->igvm, header_handle);
             return result;
         }
     }
     error_setg(errp,
-               "IGVM: Unknown directive type encountered when processing file: "
+               "IGVM: Unknown header type encountered when processing file: "
                "(type 0x%X)",
                type);
     return -1;
@@ -212,8 +263,8 @@ static bool page_attrs_equal(IgvmHandle igvm, int i,
             (page_1->compatibility_mask == page_2->compatibility_mask));
 }
 
-static int igvm_process_mem_region(ConfidentialGuestSupport *cgs,
-                                   IgvmHandle igvm, int start_index,
+static int igvm_process_mem_region(struct igvm_context *ctx,
+                                   int start_index,
                                    uint64_t gpa_start, int page_count,
                                    const IgvmPageDataFlags *flags,
                                    const IgvmPageDataType page_type,
@@ -237,7 +288,7 @@ static int igvm_process_mem_region(ConfidentialGuestSupport *cgs,
     }
 
     for (i = 0; i < page_count; ++i) {
-        data_handle = igvm_get_header_data(igvm, HEADER_SECTION_DIRECTIVE,
+        data_handle = igvm_get_header_data(ctx->cgs->igvm, HEADER_SECTION_DIRECTIVE,
                                            i + start_index);
         if (data_handle == IGVMAPI_NO_DATA) {
             /* No data indicates a zero page */
@@ -251,7 +302,7 @@ static int igvm_process_mem_region(ConfidentialGuestSupport *cgs,
             return -1;
         } else {
             zero = false;
-            data_size = igvm_get_buffer_size(igvm, data_handle);
+            data_size = igvm_get_buffer_size(ctx->cgs->igvm, data_handle);
             if (data_size < page_size) {
                 memset(&region[i * page_size], 0, page_size);
             } else if (data_size > page_size) {
@@ -261,9 +312,9 @@ static int igvm_process_mem_region(ConfidentialGuestSupport *cgs,
                            i + start_index);
                 return -1;
             }
-            data = igvm_get_buffer(igvm, data_handle);
+            data = igvm_get_buffer(ctx->cgs->igvm, data_handle);
             memcpy(&region[i * page_size], data, data_size);
-            igvm_free_buffer(igvm, data_handle);
+            igvm_free_buffer(ctx->cgs->igvm, data_handle);
         }
     }
 
@@ -277,7 +328,7 @@ static int igvm_process_mem_region(ConfidentialGuestSupport *cgs,
         return -1;
     }
 
-    result = cgs->set_guest_state(gpa_start, region, page_size * page_count,
+    result = ctx->cgs->set_guest_state(gpa_start, region, page_size * page_count,
                                   cgs_page_type, 0, errp);
     if ((result < 0) && !*errp) {
         error_setg(errp, "IGVM set guest state failed with code %d", result);
@@ -286,7 +337,7 @@ static int igvm_process_mem_region(ConfidentialGuestSupport *cgs,
     return 0;
 }
 
-static int process_mem_page(ConfidentialGuestSupport *cgs, int i,
+static int process_mem_page(struct igvm_context *ctx, int i,
                             const IGVM_VHS_PAGE_DATA *page_data, Error **errp)
 {
     ERRP_GUARD();
@@ -301,13 +352,13 @@ static int process_mem_page(ConfidentialGuestSupport *cgs, int i,
             region_start = page_data->gpa;
             region_start_i = i;
         } else {
-            if (!page_attrs_equal(cgs->igvm, i, page_data, &prev_page_data) ||
+            if (!page_attrs_equal(ctx->cgs->igvm, i, page_data, &prev_page_data) ||
                 ((prev_page_data.gpa +
                   (prev_page_data.flags.is_2mb_page ? 0x200000 : 0x1000)) !=
                  page_data->gpa) ||
                 (last_i != (i - 1))) {
                 /* End of current region */
-                if (igvm_process_mem_region(cgs, cgs->igvm, region_start_i,
+                if (igvm_process_mem_region(ctx, region_start_i,
                                         region_start, page_count,
                                         &prev_page_data.flags,
                                         prev_page_data.data_type, errp) < 0) {
@@ -323,7 +374,7 @@ static int process_mem_page(ConfidentialGuestSupport *cgs, int i,
         ++page_count;
     } else {
         if (page_count > 0) {
-            if (igvm_process_mem_region(cgs, cgs->igvm, region_start_i,
+            if (igvm_process_mem_region(ctx, region_start_i,
                                     region_start, page_count,
                                     &prev_page_data.flags,
                                     prev_page_data.data_type, errp) < 0) {
@@ -335,20 +386,18 @@ static int process_mem_page(ConfidentialGuestSupport *cgs, int i,
     return 0;
 }
 
-static int directive_page_data(ConfidentialGuestSupport *cgs, int i,
-                               uint32_t compatibility_mask,
+static int directive_page_data(struct igvm_context *ctx, int i,
                                const uint8_t *header_data, Error **errp)
 {
     const IGVM_VHS_PAGE_DATA *page_data =
         (const IGVM_VHS_PAGE_DATA *)header_data;
-    if (page_data->compatibility_mask & compatibility_mask) {
-        return process_mem_page(cgs, i, page_data, errp);
+    if (page_data->compatibility_mask & ctx->compatibility_mask) {
+        return process_mem_page(ctx, i, page_data, errp);
     }
     return 0;
 }
 
-static int directive_vp_context(ConfidentialGuestSupport *cgs, int i,
-                                uint32_t compatibility_mask,
+static int directive_vp_context(struct igvm_context *ctx, int i,
                                 const uint8_t *header_data, Error **errp)
 {
     ERRP_GUARD();
@@ -358,20 +407,21 @@ static int directive_vp_context(ConfidentialGuestSupport *cgs, int i,
     uint8_t *data;
     int result;
 
-    if (vp_context->compatibility_mask & compatibility_mask) {
+    if (vp_context->compatibility_mask & ctx->compatibility_mask) {
         data_handle =
-            igvm_get_header_data(cgs->igvm, HEADER_SECTION_DIRECTIVE, i);
+            igvm_get_header_data(ctx->cgs->igvm, HEADER_SECTION_DIRECTIVE, i);
         if (data_handle < 0) {
             error_setg(errp, "Invalid VP context in IGVM file. Error code: %X",
                        data_handle);
             return -1;
         }
 
-        data = (uint8_t *)igvm_get_buffer(cgs->igvm, data_handle);
-        result = cgs->set_guest_state(
-            vp_context->gpa, data, igvm_get_buffer_size(cgs->igvm, data_handle),
+        data = (uint8_t *)igvm_get_buffer(ctx->cgs->igvm, data_handle);
+        result = ctx->cgs->set_guest_state(
+            vp_context->gpa, data,
+            igvm_get_buffer_size(ctx->cgs->igvm, data_handle),
             CGS_PAGE_TYPE_VMSA, vp_context->vp_index, errp);
-        igvm_free_buffer(cgs->igvm, data_handle);
+        igvm_free_buffer(ctx->cgs->igvm, data_handle);
         if (result != 0) {
             if (!*errp) {
                 error_setg(errp,
@@ -384,8 +434,7 @@ static int directive_vp_context(ConfidentialGuestSupport *cgs, int i,
     return 0;
 }
 
-static int directive_parameter_area(ConfidentialGuestSupport *cgs, int i,
-                                    uint32_t compatibility_mask,
+static int directive_parameter_area(struct igvm_context *ctx, int i,
                                     const uint8_t *header_data, Error **errp)
 {
     const IGVM_VHS_PARAMETER_AREA *param_area =
@@ -397,12 +446,11 @@ static int directive_parameter_area(ConfidentialGuestSupport *cgs, int i,
     param_entry->index = param_area->parameter_area_index;
     param_entry->data = g_malloc0(param_entry->size);
 
-    QTAILQ_INSERT_TAIL(&parameter_data, param_entry, next);
+    QTAILQ_INSERT_TAIL(&ctx->parameter_data, param_entry, next);
     return 0;
 }
 
-static int directive_parameter_insert(ConfidentialGuestSupport *cgs, int i,
-                                      uint32_t compatibility_mask,
+static int directive_parameter_insert(struct igvm_context *ctx, int i,
                                       const uint8_t *header_data, Error **errp)
 {
     ERRP_GUARD();
@@ -412,7 +460,7 @@ static int directive_parameter_insert(ConfidentialGuestSupport *cgs, int i,
     int result;
     void *region;
 
-    QTAILQ_FOREACH(param_entry, &parameter_data, next)
+    QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
     {
         if (param_entry->index == param->parameter_area_index) {
             region =
@@ -424,7 +472,7 @@ static int directive_parameter_insert(ConfidentialGuestSupport *cgs, int i,
             g_free(param_entry->data);
             param_entry->data = NULL;
 
-            result = cgs->set_guest_state(param->gpa, region, param_entry->size,
+            result = ctx->cgs->set_guest_state(param->gpa, region, param_entry->size,
                                           CGS_PAGE_TYPE_UNMEASURED, 0, errp);
             if (result != 0) {
                 if (!*errp) {
@@ -455,8 +503,7 @@ static int cmp_mm_entry(const void *a, const void *b)
     }
 }
 
-static int directive_memory_map(ConfidentialGuestSupport *cgs, int i,
-                                uint32_t compatibility_mask,
+static int directive_memory_map(struct igvm_context *ctx, int i,
                                 const uint8_t *header_data, Error **errp)
 {
     const IGVM_VHS_PARAMETER *param = (const IGVM_VHS_PARAMETER *)header_data;
@@ -468,14 +515,14 @@ static int directive_memory_map(ConfidentialGuestSupport *cgs, int i,
     int retval = 0;
 
     /* Find the parameter area that should hold the memory map */
-    QTAILQ_FOREACH(param_entry, &parameter_data, next)
+    QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
     {
         if (param_entry->index == param->parameter_area_index) {
             max_entry_count =
                 param_entry->size / sizeof(IGVM_VHS_MEMORY_MAP_ENTRY);
             mm_entry = (IGVM_VHS_MEMORY_MAP_ENTRY *)param_entry->data;
 
-            retval = cgs->get_mem_map_entry(entry, &cgmm_entry, errp);
+            retval = ctx->cgs->get_mem_map_entry(entry, &cgmm_entry, errp);
             while (retval == 0) {
                 if (entry > max_entry_count) {
                     error_setg(
@@ -503,7 +550,7 @@ static int directive_memory_map(ConfidentialGuestSupport *cgs, int i,
                     mm_entry[entry].entry_type = PLATFORM_RESERVED;
                     break;
                 }
-                retval = cgs->get_mem_map_entry(++entry, &cgmm_entry, errp);
+                retval = ctx->cgs->get_mem_map_entry(++entry, &cgmm_entry, errp);
             }
             if (retval < 0) {
                 return retval;
@@ -518,8 +565,7 @@ static int directive_memory_map(ConfidentialGuestSupport *cgs, int i,
     return 0;
 }
 
-static int directive_vp_count(ConfidentialGuestSupport *cgs, int i,
-                              uint32_t compatibility_mask,
+static int directive_vp_count(struct igvm_context *ctx, int i,
                               const uint8_t *header_data, Error **errp)
 {
     const IGVM_VHS_PARAMETER *param = (const IGVM_VHS_PARAMETER *)header_data;
@@ -527,7 +573,7 @@ static int directive_vp_count(ConfidentialGuestSupport *cgs, int i,
     uint32_t *vp_count;
     CPUState *cpu;
 
-    QTAILQ_FOREACH(param_entry, &parameter_data, next)
+    QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
     {
         if (param_entry->index == param->parameter_area_index) {
             vp_count = (uint32_t *)(param_entry->data + param->byte_offset);
@@ -542,15 +588,14 @@ static int directive_vp_count(ConfidentialGuestSupport *cgs, int i,
     return 0;
 }
 
-static int directive_environment_info(ConfidentialGuestSupport *cgs, int i,
-                                      uint32_t compatibility_mask,
+static int directive_environment_info(struct igvm_context *ctx, int i,
                                       const uint8_t *header_data, Error **errp)
 {
     const IGVM_VHS_PARAMETER *param = (const IGVM_VHS_PARAMETER *)header_data;
     IgvmParameterData *param_entry;
     IgvmEnvironmentInfo *environmental_state;
 
-    QTAILQ_FOREACH(param_entry, &parameter_data, next)
+    QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
     {
         if (param_entry->index == param->parameter_area_index) {
             environmental_state =
@@ -562,8 +607,7 @@ static int directive_environment_info(ConfidentialGuestSupport *cgs, int i,
     return 0;
 }
 
-static int directive_required_memory(ConfidentialGuestSupport *cgs, int i,
-                                     uint32_t compatibility_mask,
+static int directive_required_memory(struct igvm_context *ctx, int i,
                                      const uint8_t *header_data, Error **errp)
 {
     ERRP_GUARD();
@@ -572,12 +616,12 @@ static int directive_required_memory(ConfidentialGuestSupport *cgs, int i,
     uint8_t *region;
     int result;
 
-    if (mem->compatibility_mask & compatibility_mask) {
+    if (mem->compatibility_mask & ctx->compatibility_mask) {
         region = igvm_prepare_memory(mem->gpa, mem->number_of_bytes, i, errp);
         if (!region) {
             return -1;
         }
-        result = cgs->set_guest_state(mem->gpa, region, mem->number_of_bytes,
+        result = ctx->cgs->set_guest_state(mem->gpa, region, mem->number_of_bytes,
                                       CGS_PAGE_TYPE_REQUIRED_MEMORY, 0, errp);
         if (result < 0) {
             if (!*errp) {
@@ -591,16 +635,67 @@ static int directive_required_memory(ConfidentialGuestSupport *cgs, int i,
     return 0;
 }
 
-static uint32_t supported_platform_compat_mask(ConfidentialGuestSupport *cgs,
+static int directive_snp_id_block(struct igvm_context *ctx, int i,
+                                     const uint8_t *header_data, Error **errp)
+{
+    const IGVM_VHS_SNP_ID_BLOCK *igvm_id =
+        (const IGVM_VHS_SNP_ID_BLOCK *)header_data;
+
+    if (ctx->compatibility_mask & igvm_id->compatibility_mask) {
+        if (ctx->id_block) {
+            error_setg(errp, "IGVM: Multiple ID blocks encountered "
+                             "in IGVM file.");
+            return -1;
+        }
+        ctx->id_block = g_malloc0(sizeof(struct sev_id_block));
+        ctx->id_auth = g_malloc0(sizeof(struct sev_id_authentication));
+
+        memcpy(ctx->id_block->family_id, igvm_id->family_id,
+               sizeof(ctx->id_block->family_id));
+        memcpy(ctx->id_block->image_id, igvm_id->image_id,
+               sizeof(ctx->id_block->image_id));
+        ctx->id_block->guest_svn = igvm_id->guest_svn;
+        ctx->id_block->version = 1;
+        memcpy(ctx->id_block->ld, igvm_id->ld, sizeof(ctx->id_block->ld));
+
+        ctx->id_auth->id_key_alg = igvm_id->id_key_algorithm;
+        memcpy(ctx->id_auth->id_block_sig, &igvm_id->id_key_signature,
+               sizeof(igvm_id->id_key_signature));
+
+        ctx->id_auth->auth_key_algo = igvm_id->author_key_algorithm;
+        memcpy(ctx->id_auth->id_key_sig, &igvm_id->author_key_signature,
+               sizeof(igvm_id->author_key_signature));
+
+        /*
+         * SEV and IGVM public key structure population are slightly different.
+         * See SEV Secure Nested Paging Firmware ABI Specification, Chapter 10.
+         */
+        *((uint32_t *)ctx->id_auth->id_key) = igvm_id->id_public_key.curve;
+        memcpy(&ctx->id_auth->id_key[4], &igvm_id->id_public_key.qx, 72);
+        memcpy(&ctx->id_auth->id_key[76], &igvm_id->id_public_key.qy, 72);
+
+        *((uint32_t *)ctx->id_auth->author_key) =
+            igvm_id->author_public_key.curve;
+        memcpy(&ctx->id_auth->author_key[4], &igvm_id->author_public_key.qx,
+               72);
+        memcpy(&ctx->id_auth->author_key[76], &igvm_id->author_public_key.qy,
+               72);
+    }
+
+    return 0;
+}
+
+static int supported_platform_compat_mask(struct igvm_context *ctx,
                                                Error **errp)
 {
     int32_t result;
     int i;
     IgvmHandle header_handle;
     IGVM_VHS_SUPPORTED_PLATFORM *platform;
-    uint32_t compatibility_mask = 0;
 
-    result = igvm_header_count(cgs->igvm, HEADER_SECTION_PLATFORM);
+    ctx->compatibility_mask = 0;
+
+    result = igvm_header_count(ctx->cgs->igvm, HEADER_SECTION_PLATFORM);
     if (result < 0) {
         error_setg(errp,
                    "Invalid platform header count in IGVM file. Error code: %X",
@@ -610,10 +705,10 @@ static uint32_t supported_platform_compat_mask(ConfidentialGuestSupport *cgs,
 
     for (i = 0; i < (int)result; ++i) {
         IgvmVariableHeaderType typ =
-            igvm_get_header_type(cgs->igvm, HEADER_SECTION_PLATFORM, i);
+            igvm_get_header_type(ctx->cgs->igvm, HEADER_SECTION_PLATFORM, i);
         if (typ == IGVM_VHT_SUPPORTED_PLATFORM) {
             header_handle =
-                igvm_get_header(cgs->igvm, HEADER_SECTION_PLATFORM, i);
+                igvm_get_header(ctx->cgs->igvm, HEADER_SECTION_PLATFORM, i);
             if (header_handle < 0) {
                 error_setg(errp,
                            "Invalid platform header in IGVM file. "
@@ -622,7 +717,7 @@ static uint32_t supported_platform_compat_mask(ConfidentialGuestSupport *cgs,
                 return 0;
             }
             platform =
-                (IGVM_VHS_SUPPORTED_PLATFORM *)(igvm_get_buffer(cgs->igvm,
+                (IGVM_VHS_SUPPORTED_PLATFORM *)(igvm_get_buffer(ctx->cgs->igvm,
                                                                 header_handle) +
                                                 sizeof(
                                                     IGVM_VHS_VARIABLE_HEADER));
@@ -635,28 +730,47 @@ static uint32_t supported_platform_compat_mask(ConfidentialGuestSupport *cgs,
                  * check whether each IGVM directive results in an operation
                  * that is supported by the particular derivative of SEV.
                  */
-                if (cgs->check_support(
+                if (ctx->cgs->check_support(
                         CGS_PLATFORM_SEV_SNP, platform->platform_version,
                         platform->highest_vtl, platform->shared_gpa_boundary) ||
-                    cgs->check_support(
+                    ctx->cgs->check_support(
                         CGS_PLATFORM_SEV_ES, platform->platform_version,
                         platform->highest_vtl, platform->shared_gpa_boundary) ||
-                    cgs->check_support(
+                    ctx->cgs->check_support(
                         CGS_PLATFORM_SEV, platform->platform_version,
                         platform->highest_vtl, platform->shared_gpa_boundary)) {
-                    compatibility_mask = platform->compatibility_mask;
+                    ctx->compatibility_mask = platform->compatibility_mask;
+                    ctx->platform_type = platform->platform_type;
                     break;
                 }
             }
-            igvm_free_buffer(cgs->igvm, header_handle);
+            igvm_free_buffer(ctx->cgs->igvm, header_handle);
         }
     }
-    if (compatibility_mask == 0) {
+    if (ctx->compatibility_mask == 0) {
         error_setg(
             errp,
             "IGVM file does not describe a compatible supported platform");
+        return -1;
     }
-    return compatibility_mask;
+    return 0;
+}
+
+static int handle_policy(struct igvm_context *ctx, Error **errp)
+{
+    if (ctx->platform_type == SEV_SNP) {
+        int id_block_len = 0;
+        int id_auth_len = 0;
+        if (ctx->id_block) {
+            ctx->id_block->policy = ctx->sev_policy;
+            id_block_len = sizeof(struct sev_id_block);
+            id_auth_len = sizeof(struct sev_id_authentication);
+        }
+        return ctx->cgs->set_guest_policy(GUEST_POLICY_SEV, ctx->sev_policy,
+                                          ctx->id_block, id_block_len,
+                                          ctx->id_auth, id_auth_len, errp);
+    }
+    return 0;
 }
 
 int igvm_file_init(ConfidentialGuestSupport *cgs, Error **errp)
@@ -688,9 +802,9 @@ int igvm_process(ConfidentialGuestSupport *cgs, Error **errp)
 {
     int32_t result;
     int i;
-    uint32_t compatibility_mask;
     IgvmParameterData *parameter;
     int retval = 0;
+    struct igvm_context ctx;
 
     /*
      * If this is not a Confidential guest or no IGVM has been provided then
@@ -700,12 +814,15 @@ int igvm_process(ConfidentialGuestSupport *cgs, Error **errp)
         return 0;
     }
 
+    memset(&ctx, 0, sizeof(struct igvm_context));
+    QTAILQ_INIT(&ctx.parameter_data);
+    ctx.cgs = cgs;
+
     /*
      * Check that the IGVM file provides configuration for the current
      * platform
      */
-    compatibility_mask = supported_platform_compat_mask(cgs, errp);
-    if (compatibility_mask == 0) {
+    if (supported_platform_compat_mask(&ctx, errp) != 0) {
         return -1;
     }
 
@@ -717,12 +834,27 @@ int igvm_process(ConfidentialGuestSupport *cgs, Error **errp)
         return -1;
     }
 
-    QTAILQ_INIT(&parameter_data);
-
     for (i = 0; i < (int)result; ++i) {
         IgvmVariableHeaderType type =
             igvm_get_header_type(cgs->igvm, HEADER_SECTION_DIRECTIVE, i);
-        if (directive(type, cgs, i, compatibility_mask, errp) < 0) {
+        if (handle(type, &ctx, i, errp) < 0) {
+            retval = -1;
+            break;
+        }
+    }
+
+    result = igvm_header_count(cgs->igvm, HEADER_SECTION_INITIALIZATION);
+    if (result < 0) {
+        error_setg(
+            errp, "Invalid initialization header count in IGVM file. Error code: %X",
+            result);
+        return -1;
+    }
+
+    for (i = 0; i < (int)result; ++i) {
+        IgvmVariableHeaderType type =
+            igvm_get_header_type(cgs->igvm, HEADER_SECTION_INITIALIZATION, i);
+        if (handle(type, &ctx, i, errp) < 0) {
             retval = -1;
             break;
         }
@@ -734,14 +866,21 @@ int igvm_process(ConfidentialGuestSupport *cgs, Error **errp)
      * last group is processed with this call.
      */
     if (retval == 0) {
-        retval = process_mem_page(cgs, i, NULL, errp);
+        retval = process_mem_page(&ctx, i, NULL, errp);
     }
 
-    QTAILQ_FOREACH(parameter, &parameter_data, next)
+    if (retval == 0) {
+        retval = handle_policy(&ctx, errp);
+    }
+
+    /* Clean up the context */
+    QTAILQ_FOREACH(parameter, &ctx.parameter_data, next)
     {
         g_free(parameter->data);
         parameter->data = NULL;
     }
+    g_free(ctx.id_block);
+    g_free(ctx.id_auth);
 
     return retval;
 }

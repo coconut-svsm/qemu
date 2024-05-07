@@ -88,6 +88,14 @@ static int get_mem_map_entry(int index, ConfidentialGuestMemoryMapEntry *entry,
     return -1;
 }
 
+static int memory_is_shared(Error **errp)
+{
+    error_setg(
+        errp,
+        "Shared/private pages are not supported for this platform");
+    return -1;
+}
+
 static void confidential_guest_support_init(Object *obj)
 {
     ConfidentialGuestSupport *cgs = CONFIDENTIAL_GUEST_SUPPORT(obj);
@@ -95,6 +103,7 @@ static void confidential_guest_support_init(Object *obj)
     cgs->set_guest_state = set_guest_state;
     cgs->set_guest_policy = set_guest_policy;
     cgs->get_mem_map_entry = get_mem_map_entry;
+    cgs->memory_is_shared = memory_is_shared;
 }
 
 static void confidential_guest_support_finalize(Object *obj)

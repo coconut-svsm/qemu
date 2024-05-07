@@ -164,6 +164,13 @@ struct ConfidentialGuestSupport {
      */
     int (*get_mem_map_entry)(int index, ConfidentialGuestMemoryMapEntry *entry,
                              Error **errp);
+
+    /*
+     * Returns 1 if memory pages start as shared pages.
+     * Returns 0 if memory pages start as private pages.
+     * Returns -1 on error.
+     */
+    int (*memory_is_shared)(Error **errp);
 };
 
 typedef struct ConfidentialGuestSupportClass {

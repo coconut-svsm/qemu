@@ -526,8 +526,9 @@ static int directive_memory_map(struct igvm_context *ctx, int i,
                 param_entry->size / sizeof(IGVM_VHS_MEMORY_MAP_ENTRY);
             mm_entry = (IGVM_VHS_MEMORY_MAP_ENTRY *)param_entry->data;
 
-            retval = ctx->cgs->get_mem_map_entry(entry, &cgmm_entry, errp);
-            while (retval == 0) {
+            for (retval = ctx->cgs->get_mem_map_entry(entry, &cgmm_entry, errp);
+                 !retval;
+                 retval = ctx->cgs->get_mem_map_entry(++entry, &cgmm_entry, errp)) {
                 if (entry > max_entry_count) {
                     error_setg(
                         errp,
@@ -554,7 +555,6 @@ static int directive_memory_map(struct igvm_context *ctx, int i,
                     mm_entry[entry].entry_type = PLATFORM_RESERVED;
                     break;
                 }
-                retval = ctx->cgs->get_mem_map_entry(++entry, &cgmm_entry, errp);
             }
             if (retval < 0) {
                 return retval;
@@ -598,17 +598,28 @@ static int directive_environment_info(struct igvm_context *ctx, int i,
     const IGVM_VHS_PARAMETER *param = (const IGVM_VHS_PARAMETER *)header_data;
     IgvmParameterData *param_entry;
     IgvmEnvironmentInfo *environmental_state;
+    int retval = 0;
 
     QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
     {
         if (param_entry->index == param->parameter_area_index) {
-            environmental_state =
-                (IgvmEnvironmentInfo *)(param_entry->data + param->byte_offset);
-            environmental_state->memory_is_shared = 1;
+            retval = ctx->cgs->memory_is_shared(errp);
+            if (retval >= 0) {
+                environmental_state =
+                    (IgvmEnvironmentInfo *)(param_entry->data + param->byte_offset);
+                environmental_state->memory_is_shared = retval;
+                retval = 0;
+            } else {
+                if (!*errp) {
+                    error_setg(errp,
+                               "IGVM: Failed to get environment info: error_code=%d",
+                               retval);
+                }
+            }
             break;
         }
     }
-    return 0;
+    return retval;
 }
 
 static int directive_required_memory(struct igvm_context *ctx, int i,

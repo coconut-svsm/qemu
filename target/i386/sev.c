@@ -773,6 +773,11 @@ static int cgs_get_mem_map_entry(int index,
     return 0;
 }
 
+static int cgs_memory_is_shared(Error **errp)
+{
+    return 1;
+}
+
 static char *
 sev_common_get_sev_device(Object *obj, Error **errp)
 {
@@ -828,6 +833,7 @@ sev_common_instance_init(Object *obj)
     cgs->set_guest_state = cgs_set_guest_state;
     cgs->set_guest_policy = cgs_set_guest_policy;
     cgs->get_mem_map_entry = cgs_get_mem_map_entry;
+    cgs->memory_is_shared = cgs_memory_is_shared;
 
     QTAILQ_INIT(&sev_common->launch_vmsa);
 }

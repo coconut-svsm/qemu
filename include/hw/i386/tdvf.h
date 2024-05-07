@@ -33,7 +33,7 @@
 #define TDVF_SECTION_ATTRIBUTES_PAGE_AUG    (1U << 1)
 
 typedef struct TdxFirmwareEntry {
-    uint32_t data_offset;
+    uint64_t data_offset;
     uint32_t data_len;
     uint64_t address;
     uint64_t size;
@@ -56,5 +56,7 @@ typedef struct TdxFirmware {
     for (e = (fw)->entries; e != (fw)->entries + (fw)->nr_entries; e++)
 
 int tdvf_parse_metadata(TdxFirmware *fw, void *flash_ptr, int size);
+int tdvf_initialize_igvm(TdxFirmware *fw);
+int tdvf_add_metadata(TdxFirmware *fw, TdxFirmwareEntry *entry);
 
 #endif /* HW_I386_TDVF_H */

@@ -1008,6 +1008,12 @@ int tdx_parse_tdvf(void *flash_ptr, int size)
     return tdvf_parse_metadata(&tdx_guest->tdvf, flash_ptr, size);
 }
 
+
+int tdx_initialize_igvm(void)
+{
+    return tdvf_initialize_igvm(&tdx_guest->tdvf);
+}
+
 static void tdx_inject_interrupt(uint32_t apicid, uint32_t vector)
 {
     int ret;

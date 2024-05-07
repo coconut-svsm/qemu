@@ -88,6 +88,7 @@ int tdx_pre_create_vcpu(CPUState *cpu, Error **errp);
 void tdx_set_tdvf_region(MemoryRegion *tdvf_mr);
 void tdx_set_bios2_region(MemoryRegion *bios2_region);
 int tdx_parse_tdvf(void *flash_ptr, int size);
+int tdx_initialize_igvm(void);
 int tdx_handle_exit(X86CPU *cpu, struct kvm_tdx_exit *tdx_exit);
 
 #endif /* QEMU_I386_TDX_H */

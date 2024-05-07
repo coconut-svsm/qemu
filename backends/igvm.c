@@ -749,7 +749,7 @@ static int supported_platform_compat_mask(struct igvm_context *ctx,
                                                                 header_handle) +
                                                 sizeof(
                                                     IGVM_VHS_VARIABLE_HEADER));
-            /* Currently only support SEV-SNP. */
+            /* Currently only support SEV-SNP & TDX. */
             if (platform->platform_type == SEV_SNP) {
                 /*
                  * IGVM does not define a platform types of SEV or SEV_ES.
@@ -766,6 +766,14 @@ static int supported_platform_compat_mask(struct igvm_context *ctx,
                         platform->highest_vtl, platform->shared_gpa_boundary) ||
                     ctx->cgs->check_support(
                         CGS_PLATFORM_SEV, platform->platform_version,
+                        platform->highest_vtl, platform->shared_gpa_boundary)) {
+                    ctx->compatibility_mask = platform->compatibility_mask;
+                    ctx->platform_type = platform->platform_type;
+                    found = true;
+                }
+            } else if (platform->platform_type == TDX) {
+                if (ctx->cgs->check_support(
+                        CGS_PLATFORM_TDP, platform->platform_version,
                         platform->highest_vtl, platform->shared_gpa_boundary)) {
                     ctx->compatibility_mask = platform->compatibility_mask;
                     ctx->platform_type = platform->platform_type;

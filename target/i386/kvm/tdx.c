@@ -632,7 +632,7 @@ void tdx_mem_init(MachineState *ms)
     MemoryRegion *svsm;
     uint64_t svsm_base, svsm_size;
 
-    if (!is_tdx_vm()) {
+    if (!is_tdx_vm() || cgs_is_igvm(ms->cgs)) {
         return;
     }
 
@@ -674,7 +674,7 @@ void tdx_init_fw_cfg(MachineState *ms)
         uint64_t size;
     } data;
 
-    if (!is_tdx_vm()) {
+    if (!is_tdx_vm() || cgs_is_igvm(ms->cgs)) {
         return;
     }
 
@@ -701,7 +701,7 @@ static void tdx_finalize_vm(Notifier *notifier, void *unused)
 {
     MachineState *ms = MACHINE(qdev_get_machine());
     TdxGuest *tdx = TDX_GUEST(ms->cgs);
-    TdxFirmware *tdvf = &tdx_guest->tdvf;
+    TdxFirmware *tdvf = &tdx->tdvf;
     TdxFirmwareEntry *entry;
     RAMBlock *ram_block;
     int r;
@@ -718,6 +718,7 @@ static void tdx_finalize_vm(Notifier *notifier, void *unused)
         case TDVF_SECTION_TYPE_BFV:
         case TDVF_SECTION_TYPE_CFV:
             entry->mem_ptr = tdvf->mem_ptr + entry->data_offset;
+            tdx_accept_ram_range(entry->address, entry->size);
             break;
         case TDVF_SECTION_TYPE_TD_HOB:
         case TDVF_SECTION_TYPE_TEMP_MEM:
@@ -776,12 +777,14 @@ static void tdx_finalize_vm(Notifier *notifier, void *unused)
         }
     }
 
-    /*
-     * TDVF image has been copied into private region above via
-     * KVM_MEMORY_MAPPING. It becomes useless.
-     */
-    ram_block = tdx_guest->tdvf_mr->ram_block;
-    ram_block_discard_range(ram_block, 0, ram_block->max_length);
+    if (tdx_guest->tdvf_mr) {
+        /*
+         * TDVF image has been copied into private region above via
+         * KVM_MEMORY_MAPPING. It becomes useless.
+         */
+        ram_block = tdx_guest->tdvf_mr->ram_block;
+        ram_block_discard_range(ram_block, 0, ram_block->max_length);
+    }
 
     if (tdx_guest->bios2_region) {
         struct kvm_memory_mapping mem_region = {

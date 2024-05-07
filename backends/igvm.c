@@ -722,6 +722,7 @@ static int supported_platform_compat_mask(struct igvm_context *ctx,
         IgvmVariableHeaderType typ =
             igvm_get_header_type(ctx->cgs->igvm, HEADER_SECTION_PLATFORM, i);
         if (typ == IGVM_VHT_SUPPORTED_PLATFORM) {
+            bool found = false;
             header_handle =
                 igvm_get_header(ctx->cgs->igvm, HEADER_SECTION_PLATFORM, i);
             if (header_handle < 0) {
@@ -756,10 +757,13 @@ static int supported_platform_compat_mask(struct igvm_context *ctx,
                         platform->highest_vtl, platform->shared_gpa_boundary)) {
                     ctx->compatibility_mask = platform->compatibility_mask;
                     ctx->platform_type = platform->platform_type;
-                    break;
+                    found = true;
                 }
             }
             igvm_free_buffer(ctx->cgs->igvm, header_handle);
+            if (found) {
+                break;
+            }
         }
     }
     if (ctx->compatibility_mask == 0) {

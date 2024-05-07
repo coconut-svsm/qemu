@@ -41,6 +41,7 @@ typedef enum ConfidentialGuestPlatformType {
     CGS_PLATFORM_SEV,
     CGS_PLATFORM_SEV_ES,
     CGS_PLATFORM_SEV_SNP,
+    CGS_PLATFORM_TDP,
 } ConfidentialGuestPlatformType;
 
 typedef enum ConfidentialGuestMemoryType {

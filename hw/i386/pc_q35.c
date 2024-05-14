@@ -353,6 +353,13 @@ static void pc_q35_init(MachineState *machine)
 
     /* Apply confidential guest state from IGVM if supplied */
     cgs_process_igvm(machine->cgs);
+
+    if (pcms->svsm_virtio_mmio) {
+        for (int dev = 0; dev < 4; dev++) {
+            hwaddr addr = 0xfef00000 + dev * TARGET_PAGE_SIZE;
+            sysbus_create_simple("virtio-mmio", addr, /* no irq */ NULL);
+        }
+    }
 }
 
 #define DEFINE_Q35_MACHINE(suffix, name, compatfn, optionfn) \

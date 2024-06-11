@@ -465,7 +465,8 @@ static int directive_parameter_insert(struct igvm_context *ctx, int i,
 
     QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
     {
-        if (param_entry->index == param->parameter_area_index) {
+        if (param_entry->index == param->parameter_area_index &&
+            (param->compatibility_mask & ctx->compatibility_mask)) {
             region =
                 igvm_prepare_memory(param->gpa, param_entry->size, i, errp);
             if (!region) {

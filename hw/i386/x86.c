@@ -1144,6 +1144,14 @@ void x86_bios_rom_init(MachineState *ms, const char *default_firmware,
     int bios_size, bios2_size = 0, isa_bios_size;
     ssize_t ret;
 
+    if (cgs_is_igvm(ms->cgs)) {
+        /* When using IGVM, the firmware must be provided by the IGVM file */
+        if (is_tdx_vm()) {
+            tdx_initialize_igvm();
+        }
+        return;
+    }
+
     /* BIOS load */
     bios_name = ms->firmware ?: default_firmware;
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, bios_name);

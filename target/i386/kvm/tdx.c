@@ -632,7 +632,7 @@ void tdx_mem_init(MachineState *ms)
     MemoryRegion *svsm;
     uint64_t svsm_base, svsm_size;
 
-    if (!is_tdx_vm()) {
+    if (!is_tdx_vm() || cgs_is_igvm(ms->cgs)) {
         return;
     }
 
@@ -674,7 +674,7 @@ void tdx_init_fw_cfg(MachineState *ms)
         uint64_t size;
     } data;
 
-    if (!is_tdx_vm()) {
+    if (!is_tdx_vm() || cgs_is_igvm(ms->cgs)) {
         return;
     }
 
@@ -701,7 +701,7 @@ static void tdx_finalize_vm(Notifier *notifier, void *unused)
 {
     MachineState *ms = MACHINE(qdev_get_machine());
     TdxGuest *tdx = TDX_GUEST(ms->cgs);
-    TdxFirmware *tdvf = &tdx_guest->tdvf;
+    TdxFirmware *tdvf = &tdx->tdvf;
     TdxFirmwareEntry *entry;
     RAMBlock *ram_block;
     int r;
@@ -718,6 +718,7 @@ static void tdx_finalize_vm(Notifier *notifier, void *unused)
         case TDVF_SECTION_TYPE_BFV:
         case TDVF_SECTION_TYPE_CFV:
             entry->mem_ptr = tdvf->mem_ptr + entry->data_offset;
+            tdx_accept_ram_range(entry->address, entry->size);
             break;
         case TDVF_SECTION_TYPE_TD_HOB:
         case TDVF_SECTION_TYPE_TEMP_MEM:
@@ -776,12 +777,14 @@ static void tdx_finalize_vm(Notifier *notifier, void *unused)
         }
     }
 
-    /*
-     * TDVF image has been copied into private region above via
-     * KVM_MEMORY_MAPPING. It becomes useless.
-     */
-    ram_block = tdx_guest->tdvf_mr->ram_block;
-    ram_block_discard_range(ram_block, 0, ram_block->max_length);
+    if (tdx_guest->tdvf_mr) {
+        /*
+         * TDVF image has been copied into private region above via
+         * KVM_MEMORY_MAPPING. It becomes useless.
+         */
+        ram_block = tdx_guest->tdvf_mr->ram_block;
+        ram_block_discard_range(ram_block, 0, ram_block->max_length);
+    }
 
     if (tdx_guest->bios2_region) {
         struct kvm_memory_mapping mem_region = {
@@ -1006,6 +1009,12 @@ int tdx_pre_create_vcpu(CPUState *cpu, Error **errp)
 int tdx_parse_tdvf(void *flash_ptr, int size)
 {
     return tdvf_parse_metadata(&tdx_guest->tdvf, flash_ptr, size);
+}
+
+
+int tdx_initialize_igvm(void)
+{
+    return tdvf_initialize_igvm(&tdx_guest->tdvf);
 }
 
 static void tdx_inject_interrupt(uint32_t apicid, uint32_t vector)
@@ -1492,6 +1501,124 @@ tdx_guest_set_svsm_size(Object *obj, Visitor *v, const char *name,
                       errp);
 }
 
+static int tdx_check_support(ConfidentialGuestPlatformType platform,
+                             uint16_t platform_version, uint8_t highest_vtl,
+                             uint64_t shared_gpa_boundary)
+{
+    MachineState *ms = MACHINE(qdev_get_machine());
+    TdxGuest *tdx = TDX_GUEST(ms->cgs);
+    return ((platform == CGS_PLATFORM_TDP) && (tdx->num_l2_vms > 0)) ? 1 : 0;
+}
+
+static int tdx_set_guest_state(hwaddr gpa, uint8_t *ptr, uint64_t len,
+                                     ConfidentialGuestPageType memory_type,
+                                     uint16_t cpu_index, Error **errp)
+{
+    MachineState *ms = MACHINE(qdev_get_machine());
+    TdxGuest *tdx = TDX_GUEST(ms->cgs);
+    int ret = 1;
+
+    if (!is_tdx_vm()) {
+        error_setg(errp, "%s: attempt to configure guest memory, but TDX "
+                     "is not enabled", __func__);
+        goto out;
+    }
+
+    if (len > (uint64_t)UINT32_MAX) {
+        error_setg(errp, "%s: attempt to configure guest memory, but memory "
+                     "size is too large (0x%lx)", __func__, len);
+        goto out;
+    }
+
+    switch (memory_type) {
+        case CGS_PAGE_TYPE_NORMAL:
+        case CGS_PAGE_TYPE_ZERO:
+        case CGS_PAGE_TYPE_UNMEASURED: {
+            TdxFirmwareEntry entry = {
+                .data_offset = (uint64_t)ptr,
+                .data_len = len,
+                .address = (uint64_t)gpa,
+                .size = len,
+                .type = TDVF_SECTION_TYPE_BFV,
+                .attributes = 0,
+            };
+            ret = tdvf_add_metadata(&tdx->tdvf, &entry);
+            break;
+        }
+        case CGS_PAGE_TYPE_REQUIRED_MEMORY: {
+            TdxFirmwareEntry entry = {
+                .data_offset = 0,
+                .data_len = 0,
+                .address = (uint64_t)gpa,
+                .size = len,
+                .type = TDVF_SECTION_TYPE_TEMP_MEM,
+                .attributes = 0,
+            };
+            ret = tdvf_add_metadata(&tdx->tdvf, &entry);
+            break;
+        }
+        case CGS_PAGE_TYPE_VMSA:
+            error_setg(errp, "%s: attempt to configure initial VMSA, but SEV-ES "
+                        "is not supported", __func__);
+            goto out;
+
+        case CGS_PAGE_TYPE_SECRETS:
+            error_setg(errp, "%s: attempt to configure SECRETS page, but SEV "
+                        "is not supported", __func__);
+            goto out;
+
+        case CGS_PAGE_TYPE_CPUID:
+            error_setg(errp, "%s: attempt to configure CPUID page, but SEV-SNP "
+                        "is not supported", __func__);
+            goto out;
+
+        default:
+            error_setg(errp, "%s: attempt to configure an unknown page (%d)",
+                        __func__, memory_type);
+            goto out;
+    }
+    if (ret < 0) {
+        error_setg(errp, "%s: failed to update guest. gpa: %lX, type: %d",
+                   __func__, gpa, memory_type);
+    }
+out:
+    return ret;
+}
+
+static int tdx_get_mem_map_entry(int index,
+                                 ConfidentialGuestMemoryMapEntry *entry,
+                                 Error **errp)
+{
+    if ((index < 0) || (index >= e820_get_num_entries())) {
+        return 1;
+    }
+    entry->gpa = e820_table[index].address;
+    entry->size = e820_table[index].length;
+    switch (e820_table[index].type) {
+    case E820_RAM:
+        entry->type = CGS_MEM_RAM;
+        break;
+    case E820_RESERVED:
+        entry->type = CGS_MEM_RESERVED;
+        break;
+    case E820_ACPI:
+        entry->type = CGS_MEM_ACPI;
+        break;
+    case E820_NVS:
+        entry->type = CGS_MEM_NVS;
+        break;
+    case E820_UNUSABLE:
+        entry->type = CGS_MEM_UNUSABLE;
+        break;
+    }
+    return 0;
+}
+
+static int tdx_memory_is_shared(Error **errp)
+{
+    return 0;
+}
+
 /* tdx guest */
 OBJECT_DEFINE_TYPE_WITH_INTERFACES(TdxGuest,
                                    tdx_guest,
@@ -1506,6 +1633,7 @@ OBJECT_DEFINE_TYPE_WITH_INTERFACES(TdxGuest,
 static void tdx_guest_init(Object *obj)
 {
     TdxGuest *tdx = TDX_GUEST(obj);
+    ConfidentialGuestSupport *cgs = CONFIDENTIAL_GUEST_SUPPORT(tdx);
 
     qemu_mutex_init(&tdx->lock);
 
@@ -1548,6 +1676,11 @@ static void tdx_guest_init(Object *obj)
 
     object_property_add_uint8_ptr(obj, "num-l2-vms", &tdx->num_l2_vms,
                                   OBJ_PROP_FLAG_READWRITE);
+
+    cgs->check_support = tdx_check_support;
+    cgs->set_guest_state = tdx_set_guest_state;
+    cgs->get_mem_map_entry = tdx_get_mem_map_entry;
+    cgs->memory_is_shared = tdx_memory_is_shared;
 }
 
 static void tdx_guest_finalize(Object *obj)

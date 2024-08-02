@@ -998,6 +998,7 @@
 # Since: 9.0
 ##
 { 'struct': 'TdxGuestProperties',
+  'base': 'ConfidentialGuestProperties',
   'data': { '*sept-ve-disable': 'bool',
             '*mrconfigid': 'str',
             '*mrowner': 'str',

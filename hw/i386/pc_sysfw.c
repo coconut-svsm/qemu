@@ -231,13 +231,8 @@ void pc_system_firmware_init(PCMachineState *pcms,
     }
 
     if (!pflash_blk[0]) {
-        /*
-         * Machine property pflash0 not set, use ROM mode unless using IGVM,
-         * in which case the firmware must be provided by the IGVM file.
-         */
-        if (!cgs_is_igvm(MACHINE(pcms)->cgs)) {
-            x86_bios_rom_init(MACHINE(pcms), "bios.bin", pcms->firmware2, rom_memory, false);
-        }
+        /* Machine property pflash0 not set, use ROM mode */
+        x86_bios_rom_init(MACHINE(pcms), "bios.bin", pcms->firmware2, rom_memory, false);
     } else {
         if (kvm_enabled() && !kvm_readonly_mem_enabled()) {
             /*

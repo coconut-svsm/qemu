@@ -1094,7 +1094,7 @@ static const VMStateDescription vmstate_ac97_bm_regs = {
     .name = "ac97_bm_regs",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(bdbar, AC97BusMasterRegs),
         VMSTATE_UINT8(civ, AC97BusMasterRegs),
         VMSTATE_UINT8(lvi, AC97BusMasterRegs),
@@ -1142,7 +1142,7 @@ static const VMStateDescription vmstate_ac97 = {
     .version_id = 3,
     .minimum_version_id = 2,
     .post_load = ac97_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(dev, AC97LinkState),
         VMSTATE_UINT32(glob_cnt, AC97LinkState),
         VMSTATE_UINT32(glob_sta, AC97LinkState),
@@ -1344,7 +1344,7 @@ static void ac97_class_init(ObjectClass *klass, void *data)
     dc->desc = "Intel 82801AA AC97 Audio";
     dc->vmsd = &vmstate_ac97;
     device_class_set_props(dc, ac97_properties);
-    dc->reset = ac97_on_reset;
+    device_class_set_legacy_reset(dc, ac97_on_reset);
 }
 
 static const TypeInfo ac97_info = {

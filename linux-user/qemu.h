@@ -4,12 +4,11 @@
 #include "cpu.h"
 #include "exec/cpu_ldst.h"
 
-#undef DEBUG_REMAP
-
-#include "exec/user/abitypes.h"
+#include "user/abitypes.h"
 
 #include "syscall_defs.h"
 #include "target_syscall.h"
+#include "accel/tcg/vcpu-state.h"
 
 /*
  * This is the size of the host kernel's sigset_t, needed where we make
@@ -32,6 +31,7 @@ struct image_info {
         abi_ulong       brk;
         abi_ulong       start_stack;
         abi_ulong       stack_limit;
+        abi_ulong       vdso;
         abi_ulong       entry;
         abi_ulong       code_offset;
         abi_ulong       data_offset;
@@ -96,7 +96,7 @@ struct emulated_sigtable {
     target_siginfo_t info;
 };
 
-typedef struct TaskState {
+struct TaskState {
     pid_t ts_tid;     /* tid (or pid) of this task */
 #ifdef TARGET_ARM
 # ifdef TARGET_ABI32
@@ -159,7 +159,7 @@ typedef struct TaskState {
 
     /* Start time of task after system boot in clock ticks */
     uint64_t start_boottime;
-} TaskState;
+};
 
 abi_long do_brk(abi_ulong new_brk);
 int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
@@ -326,7 +326,7 @@ void *lock_user(int type, abi_ulong guest_addr, ssize_t len, bool copy);
 /* Unlock an area of guest memory.  The first LEN bytes must be
    flushed back to guest memory. host_ptr = NULL is explicitly
    allowed and does nothing. */
-#ifndef DEBUG_REMAP
+#ifndef CONFIG_DEBUG_REMAP
 static inline void unlock_user(void *host_ptr, abi_ulong guest_addr,
                                ssize_t len)
 {

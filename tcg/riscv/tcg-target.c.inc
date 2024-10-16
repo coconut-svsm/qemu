@@ -113,20 +113,6 @@ static const int tcg_target_call_iarg_regs[] = {
     TCG_REG_A7,
 };
 
-#ifndef have_zbb
-bool have_zbb;
-#endif
-#if defined(__riscv_arch_test) && defined(__riscv_zba)
-# define have_zba true
-#else
-static bool have_zba;
-#endif
-#if defined(__riscv_arch_test) && defined(__riscv_zicond)
-# define have_zicond true
-#else
-static bool have_zicond;
-#endif
-
 static TCGReg tcg_target_call_oarg_reg(TCGCallReturnKind kind, int slot)
 {
     tcg_debug_assert(kind == TCG_CALL_RET_NORMAL);
@@ -145,7 +131,8 @@ static TCGReg tcg_target_call_oarg_reg(TCGCallReturnKind kind, int slot)
 #define sextreg  sextract64
 
 /* test if a constant matches the constraint */
-static bool tcg_target_const_match(int64_t val, TCGType type, int ct, int vece)
+static bool tcg_target_const_match(int64_t val, int ct,
+                                   TCGType type, TCGCond cond, int vece)
 {
     if (ct & TCG_CT_CONST) {
         return 1;
@@ -593,7 +580,7 @@ static void tcg_out_ext8u(TCGContext *s, TCGReg ret, TCGReg arg)
 
 static void tcg_out_ext16u(TCGContext *s, TCGReg ret, TCGReg arg)
 {
-    if (have_zbb) {
+    if (cpuinfo & CPUINFO_ZBB) {
         tcg_out_opc_reg(s, OPC_ZEXT_H, ret, arg, TCG_REG_ZERO);
     } else {
         tcg_out_opc_imm(s, OPC_SLLIW, ret, arg, 16);
@@ -603,7 +590,7 @@ static void tcg_out_ext16u(TCGContext *s, TCGReg ret, TCGReg arg)
 
 static void tcg_out_ext32u(TCGContext *s, TCGReg ret, TCGReg arg)
 {
-    if (have_zba) {
+    if (cpuinfo & CPUINFO_ZBA) {
         tcg_out_opc_reg(s, OPC_ADD_UW, ret, arg, TCG_REG_ZERO);
     } else {
         tcg_out_opc_imm(s, OPC_SLLI, ret, arg, 32);
@@ -613,7 +600,7 @@ static void tcg_out_ext32u(TCGContext *s, TCGReg ret, TCGReg arg)
 
 static void tcg_out_ext8s(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
 {
-    if (have_zbb) {
+    if (cpuinfo & CPUINFO_ZBB) {
         tcg_out_opc_imm(s, OPC_SEXT_B, ret, arg, 0);
     } else {
         tcg_out_opc_imm(s, OPC_SLLIW, ret, arg, 24);
@@ -623,7 +610,7 @@ static void tcg_out_ext8s(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
 
 static void tcg_out_ext16s(TCGContext *s, TCGType type, TCGReg ret, TCGReg arg)
 {
-    if (have_zbb) {
+    if (cpuinfo & CPUINFO_ZBB) {
         tcg_out_opc_imm(s, OPC_SEXT_H, ret, arg, 0);
     } else {
         tcg_out_opc_imm(s, OPC_SLLIW, ret, arg, 16);
@@ -1079,7 +1066,7 @@ static void tcg_out_movcond(TCGContext *s, TCGCond cond, TCGReg ret,
     int tmpflags;
     TCGReg t;
 
-    if (!have_zicond && (!c_cmp2 || cmp2 == 0)) {
+    if (!(cpuinfo & CPUINFO_ZICOND) && (!c_cmp2 || cmp2 == 0)) {
         tcg_out_movcond_br2(s, cond, ret, cmp1, cmp2,
                             val1, c_val1, val2, c_val2);
         return;
@@ -1088,7 +1075,7 @@ static void tcg_out_movcond(TCGContext *s, TCGCond cond, TCGReg ret,
     tmpflags = tcg_out_setcond_int(s, cond, TCG_REG_TMP0, cmp1, cmp2, c_cmp2);
     t = tmpflags & ~SETCOND_FLAGS;
 
-    if (have_zicond) {
+    if (cpuinfo & CPUINFO_ZICOND) {
         if (tmpflags & SETCOND_INV) {
             tcg_out_movcond_zicond(s, ret, t, val2, c_val2, val1, c_val1);
         } else {
@@ -1227,8 +1214,8 @@ static bool tcg_out_qemu_st_slow_path(TCGContext *s, TCGLabelQemuLdst *l)
 #define MIN_TLB_MASK_TABLE_OFS  -(1 << 11)
 
 /*
- * For softmmu, perform the TLB load and compare.
- * For useronly, perform any required alignment tests.
+ * For system-mode, perform the TLB load and compare.
+ * For user-mode, perform any required alignment tests.
  * In both cases, return a TCGLabelQemuLdst structure if the slow path
  * is required and fill in @h with the host address for the fast path.
  */
@@ -1245,105 +1232,110 @@ static TCGLabelQemuLdst *prepare_host_addr(TCGContext *s, TCGReg *pbase,
     aa = atom_and_align_for_opc(s, opc, MO_ATOM_IFALIGN, false);
     a_mask = (1u << aa.align) - 1;
 
-#ifdef CONFIG_SOFTMMU
-    unsigned s_bits = opc & MO_SIZE;
-    unsigned s_mask = (1u << s_bits) - 1;
-    int mem_index = get_mmuidx(oi);
-    int fast_ofs = tlb_mask_table_ofs(s, mem_index);
-    int mask_ofs = fast_ofs + offsetof(CPUTLBDescFast, mask);
-    int table_ofs = fast_ofs + offsetof(CPUTLBDescFast, table);
-    int compare_mask;
-    TCGReg addr_adj;
+    if (tcg_use_softmmu) {
+        unsigned s_bits = opc & MO_SIZE;
+        unsigned s_mask = (1u << s_bits) - 1;
+        int mem_index = get_mmuidx(oi);
+        int fast_ofs = tlb_mask_table_ofs(s, mem_index);
+        int mask_ofs = fast_ofs + offsetof(CPUTLBDescFast, mask);
+        int table_ofs = fast_ofs + offsetof(CPUTLBDescFast, table);
+        int compare_mask;
+        TCGReg addr_adj;
 
-    ldst = new_ldst_label(s);
-    ldst->is_ld = is_ld;
-    ldst->oi = oi;
-    ldst->addrlo_reg = addr_reg;
-
-    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_TMP0, TCG_AREG0, mask_ofs);
-    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_TMP1, TCG_AREG0, table_ofs);
-
-    tcg_out_opc_imm(s, OPC_SRLI, TCG_REG_TMP2, addr_reg,
-                    s->page_bits - CPU_TLB_ENTRY_BITS);
-    tcg_out_opc_reg(s, OPC_AND, TCG_REG_TMP2, TCG_REG_TMP2, TCG_REG_TMP0);
-    tcg_out_opc_reg(s, OPC_ADD, TCG_REG_TMP2, TCG_REG_TMP2, TCG_REG_TMP1);
-
-    /*
-     * For aligned accesses, we check the first byte and include the alignment
-     * bits within the address.  For unaligned access, we check that we don't
-     * cross pages using the address of the last byte of the access.
-     */
-    addr_adj = addr_reg;
-    if (a_mask < s_mask) {
-        addr_adj = TCG_REG_TMP0;
-        tcg_out_opc_imm(s, addr_type == TCG_TYPE_I32 ? OPC_ADDIW : OPC_ADDI,
-                        addr_adj, addr_reg, s_mask - a_mask);
-    }
-    compare_mask = s->page_mask | a_mask;
-    if (compare_mask == sextreg(compare_mask, 0, 12)) {
-        tcg_out_opc_imm(s, OPC_ANDI, TCG_REG_TMP1, addr_adj, compare_mask);
-    } else {
-        tcg_out_movi(s, addr_type, TCG_REG_TMP1, compare_mask);
-        tcg_out_opc_reg(s, OPC_AND, TCG_REG_TMP1, TCG_REG_TMP1, addr_adj);
-    }
-
-    /* Load the tlb comparator and the addend.  */
-    QEMU_BUILD_BUG_ON(HOST_BIG_ENDIAN);
-    tcg_out_ld(s, addr_type, TCG_REG_TMP0, TCG_REG_TMP2,
-               is_ld ? offsetof(CPUTLBEntry, addr_read)
-                     : offsetof(CPUTLBEntry, addr_write));
-    tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_TMP2, TCG_REG_TMP2,
-               offsetof(CPUTLBEntry, addend));
-
-    /* Compare masked address with the TLB entry. */
-    ldst->label_ptr[0] = s->code_ptr;
-    tcg_out_opc_branch(s, OPC_BNE, TCG_REG_TMP0, TCG_REG_TMP1, 0);
-
-    /* TLB Hit - translate address using addend.  */
-    if (addr_type != TCG_TYPE_I32) {
-        tcg_out_opc_reg(s, OPC_ADD, TCG_REG_TMP0, addr_reg, TCG_REG_TMP2);
-    } else if (have_zba) {
-        tcg_out_opc_reg(s, OPC_ADD_UW, TCG_REG_TMP0, addr_reg, TCG_REG_TMP2);
-    } else {
-        tcg_out_ext32u(s, TCG_REG_TMP0, addr_reg);
-        tcg_out_opc_reg(s, OPC_ADD, TCG_REG_TMP0, TCG_REG_TMP0, TCG_REG_TMP2);
-    }
-    *pbase = TCG_REG_TMP0;
-#else
-    TCGReg base;
-
-    if (a_mask) {
         ldst = new_ldst_label(s);
         ldst->is_ld = is_ld;
         ldst->oi = oi;
         ldst->addrlo_reg = addr_reg;
 
-        /* We are expecting alignment max 7, so we can always use andi. */
-        tcg_debug_assert(a_mask == sextreg(a_mask, 0, 12));
-        tcg_out_opc_imm(s, OPC_ANDI, TCG_REG_TMP1, addr_reg, a_mask);
+        tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_TMP0, TCG_AREG0, mask_ofs);
+        tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_TMP1, TCG_AREG0, table_ofs);
 
-        ldst->label_ptr[0] = s->code_ptr;
-        tcg_out_opc_branch(s, OPC_BNE, TCG_REG_TMP1, TCG_REG_ZERO, 0);
-    }
+        tcg_out_opc_imm(s, OPC_SRLI, TCG_REG_TMP2, addr_reg,
+                        s->page_bits - CPU_TLB_ENTRY_BITS);
+        tcg_out_opc_reg(s, OPC_AND, TCG_REG_TMP2, TCG_REG_TMP2, TCG_REG_TMP0);
+        tcg_out_opc_reg(s, OPC_ADD, TCG_REG_TMP2, TCG_REG_TMP2, TCG_REG_TMP1);
 
-    if (guest_base != 0) {
-        base = TCG_REG_TMP0;
-        if (addr_type != TCG_TYPE_I32) {
-            tcg_out_opc_reg(s, OPC_ADD, base, addr_reg, TCG_GUEST_BASE_REG);
-        } else if (have_zba) {
-            tcg_out_opc_reg(s, OPC_ADD_UW, base, addr_reg, TCG_GUEST_BASE_REG);
-        } else {
-            tcg_out_ext32u(s, base, addr_reg);
-            tcg_out_opc_reg(s, OPC_ADD, base, base, TCG_GUEST_BASE_REG);
+        /*
+         * For aligned accesses, we check the first byte and include the
+         * alignment bits within the address.  For unaligned access, we
+         * check that we don't cross pages using the address of the last
+         * byte of the access.
+         */
+        addr_adj = addr_reg;
+        if (a_mask < s_mask) {
+            addr_adj = TCG_REG_TMP0;
+            tcg_out_opc_imm(s, addr_type == TCG_TYPE_I32 ? OPC_ADDIW : OPC_ADDI,
+                            addr_adj, addr_reg, s_mask - a_mask);
         }
-    } else if (addr_type != TCG_TYPE_I32) {
-        base = addr_reg;
+        compare_mask = s->page_mask | a_mask;
+        if (compare_mask == sextreg(compare_mask, 0, 12)) {
+            tcg_out_opc_imm(s, OPC_ANDI, TCG_REG_TMP1, addr_adj, compare_mask);
+        } else {
+            tcg_out_movi(s, addr_type, TCG_REG_TMP1, compare_mask);
+            tcg_out_opc_reg(s, OPC_AND, TCG_REG_TMP1, TCG_REG_TMP1, addr_adj);
+        }
+
+        /* Load the tlb comparator and the addend.  */
+        QEMU_BUILD_BUG_ON(HOST_BIG_ENDIAN);
+        tcg_out_ld(s, addr_type, TCG_REG_TMP0, TCG_REG_TMP2,
+                   is_ld ? offsetof(CPUTLBEntry, addr_read)
+                         : offsetof(CPUTLBEntry, addr_write));
+        tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_TMP2, TCG_REG_TMP2,
+                   offsetof(CPUTLBEntry, addend));
+
+        /* Compare masked address with the TLB entry. */
+        ldst->label_ptr[0] = s->code_ptr;
+        tcg_out_opc_branch(s, OPC_BNE, TCG_REG_TMP0, TCG_REG_TMP1, 0);
+
+        /* TLB Hit - translate address using addend.  */
+        if (addr_type != TCG_TYPE_I32) {
+            tcg_out_opc_reg(s, OPC_ADD, TCG_REG_TMP0, addr_reg, TCG_REG_TMP2);
+        } else if (cpuinfo & CPUINFO_ZBA) {
+            tcg_out_opc_reg(s, OPC_ADD_UW, TCG_REG_TMP0,
+                            addr_reg, TCG_REG_TMP2);
+        } else {
+            tcg_out_ext32u(s, TCG_REG_TMP0, addr_reg);
+            tcg_out_opc_reg(s, OPC_ADD, TCG_REG_TMP0,
+                            TCG_REG_TMP0, TCG_REG_TMP2);
+        }
+        *pbase = TCG_REG_TMP0;
     } else {
-        base = TCG_REG_TMP0;
-        tcg_out_ext32u(s, base, addr_reg);
+        TCGReg base;
+
+        if (a_mask) {
+            ldst = new_ldst_label(s);
+            ldst->is_ld = is_ld;
+            ldst->oi = oi;
+            ldst->addrlo_reg = addr_reg;
+
+            /* We are expecting alignment max 7, so we can always use andi. */
+            tcg_debug_assert(a_mask == sextreg(a_mask, 0, 12));
+            tcg_out_opc_imm(s, OPC_ANDI, TCG_REG_TMP1, addr_reg, a_mask);
+
+            ldst->label_ptr[0] = s->code_ptr;
+            tcg_out_opc_branch(s, OPC_BNE, TCG_REG_TMP1, TCG_REG_ZERO, 0);
+        }
+
+        if (guest_base != 0) {
+            base = TCG_REG_TMP0;
+            if (addr_type != TCG_TYPE_I32) {
+                tcg_out_opc_reg(s, OPC_ADD, base, addr_reg,
+                                TCG_GUEST_BASE_REG);
+            } else if (cpuinfo & CPUINFO_ZBA) {
+                tcg_out_opc_reg(s, OPC_ADD_UW, base, addr_reg,
+                                TCG_GUEST_BASE_REG);
+            } else {
+                tcg_out_ext32u(s, base, addr_reg);
+                tcg_out_opc_reg(s, OPC_ADD, base, base, TCG_GUEST_BASE_REG);
+            }
+        } else if (addr_type != TCG_TYPE_I32) {
+            base = addr_reg;
+        } else {
+            base = TCG_REG_TMP0;
+            tcg_out_ext32u(s, base, addr_reg);
+        }
+        *pbase = base;
     }
-    *pbase = base;
-#endif
 
     return ldst;
 }
@@ -2075,10 +2067,10 @@ static void tcg_target_qemu_prologue(TCGContext *s)
                    TCG_REG_SP, SAVE_OFS + i * REG_SIZE);
     }
 
-#if !defined(CONFIG_SOFTMMU)
-    tcg_out_movi(s, TCG_TYPE_PTR, TCG_GUEST_BASE_REG, guest_base);
-    tcg_regset_set_reg(s->reserved_regs, TCG_GUEST_BASE_REG);
-#endif
+    if (!tcg_use_softmmu && guest_base) {
+        tcg_out_movi(s, TCG_TYPE_PTR, TCG_GUEST_BASE_REG, guest_base);
+        tcg_regset_set_reg(s->reserved_regs, TCG_GUEST_BASE_REG);
+    }
 
     /* Call generated code */
     tcg_out_mov(s, TCG_TYPE_PTR, TCG_AREG0, tcg_target_call_iarg_regs[0]);
@@ -2104,62 +2096,8 @@ static void tcg_out_tb_start(TCGContext *s)
     /* nothing to do */
 }
 
-static volatile sig_atomic_t got_sigill;
-
-static void sigill_handler(int signo, siginfo_t *si, void *data)
-{
-    /* Skip the faulty instruction */
-    ucontext_t *uc = (ucontext_t *)data;
-    uc->uc_mcontext.__gregs[REG_PC] += 4;
-
-    got_sigill = 1;
-}
-
-static void tcg_target_detect_isa(void)
-{
-#if !defined(have_zba) || !defined(have_zbb) || !defined(have_zicond)
-    /*
-     * TODO: It is expected that this will be determinable via
-     * linux riscv_hwprobe syscall, not yet merged.
-     * In the meantime, test via sigill.
-     */
-
-    struct sigaction sa_old, sa_new;
-
-    memset(&sa_new, 0, sizeof(sa_new));
-    sa_new.sa_flags = SA_SIGINFO;
-    sa_new.sa_sigaction = sigill_handler;
-    sigaction(SIGILL, &sa_new, &sa_old);
-
-#ifndef have_zba
-    /* Probe for Zba: add.uw zero,zero,zero. */
-    got_sigill = 0;
-    asm volatile(".insn r 0x3b, 0, 0x04, zero, zero, zero" : : : "memory");
-    have_zba = !got_sigill;
-#endif
-
-#ifndef have_zbb
-    /* Probe for Zba: andn zero,zero,zero. */
-    got_sigill = 0;
-    asm volatile(".insn r 0x33, 7, 0x20, zero, zero, zero" : : : "memory");
-    have_zbb = !got_sigill;
-#endif
-
-#ifndef have_zicond
-    /* Probe for Zicond: czero.eqz zero,zero,zero. */
-    got_sigill = 0;
-    asm volatile(".insn r 0x33, 5, 0x07, zero, zero, zero" : : : "memory");
-    have_zicond = !got_sigill;
-#endif
-
-    sigaction(SIGILL, &sa_old, NULL);
-#endif
-}
-
 static void tcg_target_init(TCGContext *s)
 {
-    tcg_target_detect_isa();
-
     tcg_target_available_regs[TCG_TYPE_I32] = 0xffffffff;
     tcg_target_available_regs[TCG_TYPE_I64] = 0xffffffff;
 

@@ -9,7 +9,7 @@
  */
 
 /**
- * Reference Specs: https://www.jedec.org/, 3.1
+ * Reference Specs: https://www.jedec.org/, 4.0
  *
  * Usage
  * -----
@@ -24,13 +24,62 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "migration/vmstate.h"
+#include "scsi/constants.h"
 #include "trace.h"
 #include "ufs.h"
 
-/* The QEMU-UFS device follows spec version 3.1 */
-#define UFS_SPEC_VER 0x0310
+/* The QEMU-UFS device follows spec version 4.0 */
+#define UFS_SPEC_VER 0x0400
 #define UFS_MAX_NUTRS 32
 #define UFS_MAX_NUTMRS 8
+#define UFS_MCQ_QCFGPTR 2
+
+static void ufs_exec_req(UfsRequest *req);
+static void ufs_clear_req(UfsRequest *req);
+
+static inline uint64_t ufs_mcq_reg_addr(UfsHc *u, int qid)
+{
+    /* Submission Queue MCQ Registers offset (400h) */
+    return (UFS_MCQ_QCFGPTR * 0x200) + qid * 0x40;
+}
+
+static inline uint64_t ufs_mcq_op_reg_addr(UfsHc *u, int qid)
+{
+    /* MCQ Operation & Runtime Registers offset (1000h) */
+    return UFS_MCQ_OPR_START + qid * 48;
+}
+
+static inline uint64_t ufs_reg_size(UfsHc *u)
+{
+    /* Total UFS HCI Register size in bytes */
+    return ufs_mcq_op_reg_addr(u, 0) + sizeof(u->mcq_op_reg);
+}
+
+static inline bool ufs_is_mcq_reg(UfsHc *u, uint64_t addr, unsigned size)
+{
+    uint64_t mcq_reg_addr;
+
+    if (!u->params.mcq) {
+        return false;
+    }
+
+    mcq_reg_addr = ufs_mcq_reg_addr(u, 0);
+    return (addr >= mcq_reg_addr &&
+            addr + size <= mcq_reg_addr + sizeof(u->mcq_reg));
+}
+
+static inline bool ufs_is_mcq_op_reg(UfsHc *u, uint64_t addr, unsigned size)
+{
+    uint64_t mcq_op_reg_addr;
+
+    if (!u->params.mcq) {
+        return false;
+    }
+
+    mcq_op_reg_addr = ufs_mcq_op_reg_addr(u, 0);
+    return (addr >= mcq_op_reg_addr &&
+            addr + size <= mcq_op_reg_addr + sizeof(u->mcq_op_reg));
+}
 
 static MemTxResult ufs_addr_read(UfsHc *u, hwaddr addr, void *buf, int size)
 {
@@ -61,8 +110,6 @@ static MemTxResult ufs_addr_write(UfsHc *u, hwaddr addr, const void *buf,
 
     return pci_dma_write(PCI_DEVICE(u), addr, buf, size);
 }
-
-static void ufs_complete_req(UfsRequest *req, UfsReqResult req_result);
 
 static inline hwaddr ufs_get_utrd_addr(UfsHc *u, uint32_t slot)
 {
@@ -127,6 +174,10 @@ static MemTxResult ufs_dma_read_req_upiu(UfsRequest *req)
     copy_size = sizeof(UtpUpiuHeader) + UFS_TRANSACTION_SPECIFIC_FIELD_SIZE +
                 data_segment_length;
 
+    if (copy_size > sizeof(req->req_upiu)) {
+        copy_size = sizeof(req->req_upiu);
+    }
+
     ret = ufs_addr_read(u, req_upiu_base_addr, &req->req_upiu, copy_size);
     if (ret) {
         trace_ufs_err_dma_read_req_upiu(req->slot, req_upiu_base_addr);
@@ -163,11 +214,13 @@ static MemTxResult ufs_dma_read_prdt(UfsRequest *req)
 
     req->sg = g_malloc0(sizeof(QEMUSGList));
     pci_dma_sglist_init(req->sg, PCI_DEVICE(u), prdt_len);
+    req->data_len = 0;
 
     for (uint16_t i = 0; i < prdt_len; ++i) {
         hwaddr data_dma_addr = le64_to_cpu(prd_entries[i].addr);
         uint32_t data_byte_count = le32_to_cpu(prd_entries[i].size) + 1;
         qemu_sglist_add(req->sg, data_dma_addr, data_byte_count);
+        req->data_len += data_byte_count;
     }
     return MEMTX_OK;
 }
@@ -176,9 +229,14 @@ static MemTxResult ufs_dma_read_upiu(UfsRequest *req)
 {
     MemTxResult ret;
 
-    ret = ufs_dma_read_utrd(req);
-    if (ret) {
-        return ret;
+    /*
+     * In case of MCQ, UTRD has already been read from a SQ, so skip it.
+     */
+    if (!ufs_mcq_req(req)) {
+        ret = ufs_dma_read_utrd(req);
+        if (ret) {
+            return ret;
+        }
     }
 
     ret = ufs_dma_read_req_upiu(req);
@@ -224,6 +282,10 @@ static MemTxResult ufs_dma_write_rsp_upiu(UfsRequest *req)
         copy_size = rsp_upiu_byte_len;
     }
 
+    if (copy_size > sizeof(req->rsp_upiu)) {
+        copy_size = sizeof(req->rsp_upiu);
+    }
+
     ret = ufs_addr_write(u, rsp_upiu_base_addr, &req->rsp_upiu, copy_size);
     if (ret) {
         trace_ufs_err_dma_write_rsp_upiu(req->slot, rsp_upiu_base_addr);
@@ -258,7 +320,7 @@ static void ufs_irq_check(UfsHc *u)
 
 static void ufs_process_db(UfsHc *u, uint32_t val)
 {
-    unsigned long doorbell;
+    DECLARE_BITMAP(doorbell, UFS_MAX_NUTRS);
     uint32_t slot;
     uint32_t nutrs = u->params.nutrs;
     UfsRequest *req;
@@ -268,8 +330,8 @@ static void ufs_process_db(UfsHc *u, uint32_t val)
         return;
     }
 
-    doorbell = val;
-    slot = find_first_bit(&doorbell, nutrs);
+    doorbell[0] = val;
+    slot = find_first_bit(doorbell, nutrs);
 
     while (slot < nutrs) {
         req = &u->req_list[slot];
@@ -285,7 +347,7 @@ static void ufs_process_db(UfsHc *u, uint32_t val)
 
         trace_ufs_process_db(slot);
         req->state = UFS_REQUEST_READY;
-        slot = find_next_bit(&doorbell, nutrs, slot + 1);
+        slot = find_next_bit(doorbell, nutrs, slot + 1);
     }
 
     qemu_bh_schedule(u->doorbell_bh);
@@ -324,6 +386,219 @@ static void ufs_process_uiccmd(UfsHc *u, uint32_t val)
     u->reg.is = FIELD_DP32(u->reg.is, IS, UCCS, 1);
 
     ufs_irq_check(u);
+}
+
+static void ufs_mcq_init_req(UfsHc *u, UfsRequest *req, UfsSq *sq)
+{
+    memset(req, 0, sizeof(*req));
+
+    req->hc = u;
+    req->state = UFS_REQUEST_IDLE;
+    req->slot = UFS_INVALID_SLOT;
+    req->sq = sq;
+}
+
+static void ufs_mcq_process_sq(void *opaque)
+{
+    UfsSq *sq = opaque;
+    UfsHc *u = sq->u;
+    UfsSqEntry sqe;
+    UfsRequest *req;
+    hwaddr addr;
+    uint16_t head = ufs_mcq_sq_head(u, sq->sqid);
+    int err;
+
+    while (!(ufs_mcq_sq_empty(u, sq->sqid) || QTAILQ_EMPTY(&sq->req_list))) {
+        addr = sq->addr + head;
+        err = ufs_addr_read(sq->u, addr, (void *)&sqe, sizeof(sqe));
+        if (err) {
+            trace_ufs_err_dma_read_sq(sq->sqid, addr);
+            return;
+        }
+
+        head = (head + sizeof(sqe)) % (sq->size * sizeof(sqe));
+        ufs_mcq_update_sq_head(u, sq->sqid, head);
+
+        req = QTAILQ_FIRST(&sq->req_list);
+        QTAILQ_REMOVE(&sq->req_list, req, entry);
+
+        ufs_mcq_init_req(sq->u, req, sq);
+        memcpy(&req->utrd, &sqe, sizeof(req->utrd));
+
+        req->state = UFS_REQUEST_RUNNING;
+        ufs_exec_req(req);
+    }
+}
+
+static void ufs_mcq_process_cq(void *opaque)
+{
+    UfsCq *cq = opaque;
+    UfsHc *u = cq->u;
+    UfsRequest *req, *next;
+    MemTxResult ret;
+    uint32_t tail = ufs_mcq_cq_tail(u, cq->cqid);
+
+    QTAILQ_FOREACH_SAFE(req, &cq->req_list, entry, next)
+    {
+        ufs_dma_write_rsp_upiu(req);
+
+        req->cqe.utp_addr =
+            ((uint64_t)req->utrd.command_desc_base_addr_hi << 32ULL) |
+            req->utrd.command_desc_base_addr_lo;
+        req->cqe.utp_addr |= req->sq->sqid;
+        req->cqe.resp_len = req->utrd.response_upiu_length;
+        req->cqe.resp_off = req->utrd.response_upiu_offset;
+        req->cqe.prdt_len = req->utrd.prd_table_length;
+        req->cqe.prdt_off = req->utrd.prd_table_offset;
+        req->cqe.status = req->utrd.header.dword_2 & 0xf;
+        req->cqe.error = 0;
+
+        ret = ufs_addr_write(u, cq->addr + tail, &req->cqe, sizeof(req->cqe));
+        if (ret) {
+            trace_ufs_err_dma_write_cq(cq->cqid, cq->addr + tail);
+        }
+        QTAILQ_REMOVE(&cq->req_list, req, entry);
+
+        tail = (tail + sizeof(req->cqe)) % (cq->size * sizeof(req->cqe));
+        ufs_mcq_update_cq_tail(u, cq->cqid, tail);
+
+        ufs_clear_req(req);
+        QTAILQ_INSERT_TAIL(&req->sq->req_list, req, entry);
+    }
+
+    if (!ufs_mcq_cq_empty(u, cq->cqid)) {
+        u->mcq_op_reg[cq->cqid].cq_int.is =
+            FIELD_DP32(u->mcq_op_reg[cq->cqid].cq_int.is, CQIS, TEPS, 1);
+
+        u->reg.is = FIELD_DP32(u->reg.is, IS, CQES, 1);
+        ufs_irq_check(u);
+    }
+}
+
+static bool ufs_mcq_create_sq(UfsHc *u, uint8_t qid, uint32_t attr)
+{
+    UfsMcqReg *reg = &u->mcq_reg[qid];
+    UfsSq *sq;
+    uint8_t cqid = FIELD_EX32(attr, SQATTR, CQID);
+
+    if (qid >= u->params.mcq_maxq) {
+        trace_ufs_err_mcq_create_sq_invalid_sqid(qid);
+        return false;
+    }
+
+    if (u->sq[qid]) {
+        trace_ufs_err_mcq_create_sq_already_exists(qid);
+        return false;
+    }
+
+    if (!u->cq[cqid]) {
+        trace_ufs_err_mcq_create_sq_invalid_cqid(qid);
+        return false;
+    }
+
+    sq = g_malloc0(sizeof(*sq));
+    sq->u = u;
+    sq->sqid = qid;
+    sq->cq = u->cq[cqid];
+    sq->addr = ((uint64_t)reg->squba << 32) | reg->sqlba;
+    sq->size = ((FIELD_EX32(attr, SQATTR, SIZE) + 1) << 2) / sizeof(UfsSqEntry);
+
+    sq->bh = qemu_bh_new_guarded(ufs_mcq_process_sq, sq,
+                                 &DEVICE(u)->mem_reentrancy_guard);
+    sq->req = g_new0(UfsRequest, sq->size);
+    QTAILQ_INIT(&sq->req_list);
+    for (int i = 0; i < sq->size; i++) {
+        ufs_mcq_init_req(u, &sq->req[i], sq);
+        QTAILQ_INSERT_TAIL(&sq->req_list, &sq->req[i], entry);
+    }
+
+    u->sq[qid] = sq;
+
+    trace_ufs_mcq_create_sq(sq->sqid, sq->cq->cqid, sq->addr, sq->size);
+    return true;
+}
+
+static bool ufs_mcq_delete_sq(UfsHc *u, uint8_t qid)
+{
+    UfsSq *sq;
+
+    if (qid >= u->params.mcq_maxq) {
+        trace_ufs_err_mcq_delete_sq_invalid_sqid(qid);
+        return false;
+    }
+
+    if (!u->sq[qid]) {
+        trace_ufs_err_mcq_delete_sq_not_exists(qid);
+        return false;
+    }
+
+    sq = u->sq[qid];
+
+    qemu_bh_delete(sq->bh);
+    g_free(sq->req);
+    g_free(sq);
+    u->sq[qid] = NULL;
+    return true;
+}
+
+static bool ufs_mcq_create_cq(UfsHc *u, uint8_t qid, uint32_t attr)
+{
+    UfsMcqReg *reg = &u->mcq_reg[qid];
+    UfsCq *cq;
+
+    if (qid >= u->params.mcq_maxq) {
+        trace_ufs_err_mcq_create_cq_invalid_cqid(qid);
+        return false;
+    }
+
+    if (u->cq[qid]) {
+        trace_ufs_err_mcq_create_cq_already_exists(qid);
+        return false;
+    }
+
+    cq = g_malloc0(sizeof(*cq));
+    cq->u = u;
+    cq->cqid = qid;
+    cq->addr = ((uint64_t)reg->cquba << 32) | reg->cqlba;
+    cq->size = ((FIELD_EX32(attr, CQATTR, SIZE) + 1) << 2) / sizeof(UfsCqEntry);
+
+    cq->bh = qemu_bh_new_guarded(ufs_mcq_process_cq, cq,
+                                 &DEVICE(u)->mem_reentrancy_guard);
+    QTAILQ_INIT(&cq->req_list);
+
+    u->cq[qid] = cq;
+
+    trace_ufs_mcq_create_cq(cq->cqid, cq->addr, cq->size);
+    return true;
+}
+
+static bool ufs_mcq_delete_cq(UfsHc *u, uint8_t qid)
+{
+    UfsCq *cq;
+
+    if (qid >= u->params.mcq_maxq) {
+        trace_ufs_err_mcq_delete_cq_invalid_cqid(qid);
+        return false;
+    }
+
+    if (!u->cq[qid]) {
+        trace_ufs_err_mcq_delete_cq_not_exists(qid);
+        return false;
+    }
+
+    for (int i = 0; i < ARRAY_SIZE(u->sq); i++) {
+        if (u->sq[i] && u->sq[i]->cq->cqid == qid) {
+            trace_ufs_err_mcq_delete_cq_sq_not_deleted(i, qid);
+            return false;
+        }
+    }
+
+    cq = u->cq[qid];
+
+    qemu_bh_delete(cq->bh);
+    g_free(cq);
+    u->cq[qid] = NULL;
+    return true;
 }
 
 static void ufs_write_reg(UfsHc *u, hwaddr offset, uint32_t data, unsigned size)
@@ -381,6 +656,12 @@ static void ufs_write_reg(UfsHc *u, hwaddr offset, uint32_t data, unsigned size)
     case A_UCMDARG3:
         u->reg.ucmdarg3 = data;
         break;
+    case A_CONFIG:
+        u->reg.config = data;
+        break;
+    case A_MCQCONFIG:
+        u->reg.mcqconfig = data;
+        break;
     case A_UTRLCLR:
     case A_UTMRLDBR:
     case A_UTMRLCLR:
@@ -393,18 +674,138 @@ static void ufs_write_reg(UfsHc *u, hwaddr offset, uint32_t data, unsigned size)
     }
 }
 
+static void ufs_write_mcq_reg(UfsHc *u, hwaddr offset, uint32_t data,
+                              unsigned size)
+{
+    int qid = offset / sizeof(UfsMcqReg);
+    UfsMcqReg *reg = &u->mcq_reg[qid];
+
+    switch (offset % sizeof(UfsMcqReg)) {
+    case A_SQATTR:
+        if (!FIELD_EX32(reg->sqattr, SQATTR, SQEN) &&
+            FIELD_EX32(data, SQATTR, SQEN)) {
+            if (!ufs_mcq_create_sq(u, qid, data)) {
+                break;
+            }
+        } else if (FIELD_EX32(reg->sqattr, SQATTR, SQEN) &&
+                   !FIELD_EX32(data, SQATTR, SQEN)) {
+            if (!ufs_mcq_delete_sq(u, qid)) {
+                break;
+            }
+        }
+        reg->sqattr = data;
+        break;
+    case A_SQLBA:
+        reg->sqlba = data;
+        break;
+    case A_SQUBA:
+        reg->squba = data;
+        break;
+    case A_SQCFG:
+        reg->sqcfg = data;
+        break;
+    case A_CQATTR:
+        if (!FIELD_EX32(reg->cqattr, CQATTR, CQEN) &&
+            FIELD_EX32(data, CQATTR, CQEN)) {
+            if (!ufs_mcq_create_cq(u, qid, data)) {
+                break;
+            }
+        } else if (FIELD_EX32(reg->cqattr, CQATTR, CQEN) &&
+                   !FIELD_EX32(data, CQATTR, CQEN)) {
+            if (!ufs_mcq_delete_cq(u, qid)) {
+                break;
+            }
+        }
+        reg->cqattr = data;
+        break;
+    case A_CQLBA:
+        reg->cqlba = data;
+        break;
+    case A_CQUBA:
+        reg->cquba = data;
+        break;
+    case A_CQCFG:
+        reg->cqcfg = data;
+        break;
+    case A_SQDAO:
+    case A_SQISAO:
+    case A_CQDAO:
+    case A_CQISAO:
+        trace_ufs_err_unsupport_register_offset(offset);
+        break;
+    default:
+        trace_ufs_err_invalid_register_offset(offset);
+        break;
+    }
+}
+
+static void ufs_mcq_process_db(UfsHc *u, uint8_t qid, uint32_t db)
+{
+    UfsSq *sq;
+
+    if (qid >= u->params.mcq_maxq) {
+        trace_ufs_err_mcq_db_wr_invalid_sqid(qid);
+        return;
+    }
+
+    sq = u->sq[qid];
+    if (sq->size * sizeof(UfsSqEntry) <= db) {
+        trace_ufs_err_mcq_db_wr_invalid_db(qid, db);
+        return;
+    }
+
+    ufs_mcq_update_sq_tail(u, sq->sqid, db);
+    qemu_bh_schedule(sq->bh);
+}
+
+static void ufs_write_mcq_op_reg(UfsHc *u, hwaddr offset, uint32_t data,
+                                 unsigned size)
+{
+    int qid = offset / sizeof(UfsMcqOpReg);
+    UfsMcqOpReg *opr = &u->mcq_op_reg[qid];
+
+    switch (offset % sizeof(UfsMcqOpReg)) {
+    case offsetof(UfsMcqOpReg, sq.tp):
+        if (opr->sq.tp != data) {
+            ufs_mcq_process_db(u, qid, data);
+        }
+        opr->sq.tp = data;
+        break;
+    case offsetof(UfsMcqOpReg, cq.hp):
+        opr->cq.hp = data;
+        ufs_mcq_update_cq_head(u, qid, data);
+        break;
+    case offsetof(UfsMcqOpReg, cq_int.is):
+        opr->cq_int.is &= ~data;
+        break;
+    default:
+        trace_ufs_err_invalid_register_offset(offset);
+        break;
+    }
+}
+
 static uint64_t ufs_mmio_read(void *opaque, hwaddr addr, unsigned size)
 {
     UfsHc *u = (UfsHc *)opaque;
-    uint8_t *ptr = (uint8_t *)&u->reg;
+    uint32_t *ptr;
     uint64_t value;
+    uint64_t offset;
 
-    if (addr > sizeof(u->reg) - size) {
+    if (addr + size <= sizeof(u->reg)) {
+        offset = addr;
+        ptr = (uint32_t *)&u->reg;
+    } else if (ufs_is_mcq_reg(u, addr, size)) {
+        offset = addr - ufs_mcq_reg_addr(u, 0);
+        ptr = (uint32_t *)&u->mcq_reg;
+    } else if (ufs_is_mcq_op_reg(u, addr, size)) {
+        offset = addr - ufs_mcq_op_reg_addr(u, 0);
+        ptr = (uint32_t *)&u->mcq_op_reg;
+    } else {
         trace_ufs_err_invalid_register_offset(addr);
         return 0;
     }
 
-    value = *(uint32_t *)(ptr + addr);
+    value = ptr[offset >> 2];
     trace_ufs_mmio_read(addr, value, size);
     return value;
 }
@@ -414,13 +815,17 @@ static void ufs_mmio_write(void *opaque, hwaddr addr, uint64_t data,
 {
     UfsHc *u = (UfsHc *)opaque;
 
-    if (addr > sizeof(u->reg) - size) {
-        trace_ufs_err_invalid_register_offset(addr);
-        return;
-    }
-
     trace_ufs_mmio_write(addr, data, size);
-    ufs_write_reg(u, addr, data, size);
+
+    if (addr + size <= sizeof(u->reg)) {
+        ufs_write_reg(u, addr, data, size);
+    } else if (ufs_is_mcq_reg(u, addr, size)) {
+        ufs_write_mcq_reg(u, addr - ufs_mcq_reg_addr(u, 0), data, size);
+    } else if (ufs_is_mcq_op_reg(u, addr, size)) {
+        ufs_write_mcq_op_reg(u, addr - ufs_mcq_op_reg_addr(u, 0), data, size);
+    } else {
+        trace_ufs_err_invalid_register_offset(addr);
+    }
 }
 
 static const MemoryRegionOps ufs_mmio_ops = {
@@ -433,23 +838,10 @@ static const MemoryRegionOps ufs_mmio_ops = {
     },
 };
 
-static QEMUSGList *ufs_get_sg_list(SCSIRequest *scsi_req)
-{
-    UfsRequest *req = scsi_req->hba_private;
-    return req->sg;
-}
 
-static void ufs_build_upiu_sense_data(UfsRequest *req, SCSIRequest *scsi_req)
-{
-    req->rsp_upiu.sr.sense_data_len = cpu_to_be16(scsi_req->sense_len);
-    assert(scsi_req->sense_len <= SCSI_SENSE_LEN);
-    memcpy(req->rsp_upiu.sr.sense_data, scsi_req->sense, scsi_req->sense_len);
-}
-
-static void ufs_build_upiu_header(UfsRequest *req, uint8_t trans_type,
-                                  uint8_t flags, uint8_t response,
-                                  uint8_t scsi_status,
-                                  uint16_t data_segment_length)
+void ufs_build_upiu_header(UfsRequest *req, uint8_t trans_type, uint8_t flags,
+                           uint8_t response, uint8_t scsi_status,
+                           uint16_t data_segment_length)
 {
     memcpy(&req->rsp_upiu.header, &req->req_upiu.header, sizeof(UtpUpiuHeader));
     req->rsp_upiu.header.trans_type = trans_type;
@@ -459,96 +851,46 @@ static void ufs_build_upiu_header(UfsRequest *req, uint8_t trans_type,
     req->rsp_upiu.header.data_segment_length = cpu_to_be16(data_segment_length);
 }
 
-static void ufs_scsi_command_complete(SCSIRequest *scsi_req, size_t resid)
+void ufs_build_query_response(UfsRequest *req)
 {
-    UfsRequest *req = scsi_req->hba_private;
-    int16_t status = scsi_req->status;
-    uint32_t expected_len = be32_to_cpu(req->req_upiu.sc.exp_data_transfer_len);
-    uint32_t transfered_len = scsi_req->cmd.xfer - resid;
-    uint8_t flags = 0, response = UFS_COMMAND_RESULT_SUCESS;
-    uint16_t data_segment_length;
-
-    if (expected_len > transfered_len) {
-        req->rsp_upiu.sr.residual_transfer_count =
-            cpu_to_be32(expected_len - transfered_len);
-        flags |= UFS_UPIU_FLAG_UNDERFLOW;
-    } else if (expected_len < transfered_len) {
-        req->rsp_upiu.sr.residual_transfer_count =
-            cpu_to_be32(transfered_len - expected_len);
-        flags |= UFS_UPIU_FLAG_OVERFLOW;
-    }
-
-    if (status != 0) {
-        ufs_build_upiu_sense_data(req, scsi_req);
-        response = UFS_COMMAND_RESULT_FAIL;
-    }
-
-    data_segment_length = cpu_to_be16(scsi_req->sense_len +
-                                      sizeof(req->rsp_upiu.sr.sense_data_len));
-    ufs_build_upiu_header(req, UFS_UPIU_TRANSACTION_RESPONSE, flags, response,
-                          status, data_segment_length);
-
-    ufs_complete_req(req, UFS_REQUEST_SUCCESS);
-
-    scsi_req->hba_private = NULL;
-    scsi_req_unref(scsi_req);
+    req->rsp_upiu.qr.opcode = req->req_upiu.qr.opcode;
+    req->rsp_upiu.qr.idn = req->req_upiu.qr.idn;
+    req->rsp_upiu.qr.index = req->req_upiu.qr.index;
+    req->rsp_upiu.qr.selector = req->req_upiu.qr.selector;
 }
-
-static const struct SCSIBusInfo ufs_scsi_info = {
-    .tcq = true,
-    .max_target = 0,
-    .max_lun = UFS_MAX_LUS,
-    .max_channel = 0,
-
-    .get_sg_list = ufs_get_sg_list,
-    .complete = ufs_scsi_command_complete,
-};
 
 static UfsReqResult ufs_exec_scsi_cmd(UfsRequest *req)
 {
     UfsHc *u = req->hc;
     uint8_t lun = req->req_upiu.header.lun;
-    uint8_t task_tag = req->req_upiu.header.task_tag;
-    SCSIDevice *dev = NULL;
+
+    UfsLu *lu = NULL;
 
     trace_ufs_exec_scsi_cmd(req->slot, lun, req->req_upiu.sc.cdb[0]);
 
-    if (!is_wlun(lun)) {
-        if (lun >= u->device_desc.number_lu) {
-            trace_ufs_err_scsi_cmd_invalid_lun(lun);
-            return UFS_REQUEST_FAIL;
-        } else if (u->lus[lun] == NULL) {
-            trace_ufs_err_scsi_cmd_invalid_lun(lun);
-            return UFS_REQUEST_FAIL;
-        }
+    if (!is_wlun(lun) && (lun >= UFS_MAX_LUS || u->lus[lun] == NULL)) {
+        trace_ufs_err_scsi_cmd_invalid_lun(lun);
+        return UFS_REQUEST_FAIL;
     }
 
     switch (lun) {
     case UFS_UPIU_REPORT_LUNS_WLUN:
-        dev = &u->report_wlu->qdev;
+        lu = &u->report_wlu;
         break;
     case UFS_UPIU_UFS_DEVICE_WLUN:
-        dev = &u->dev_wlu->qdev;
+        lu = &u->dev_wlu;
         break;
     case UFS_UPIU_BOOT_WLUN:
-        dev = &u->boot_wlu->qdev;
+        lu = &u->boot_wlu;
         break;
     case UFS_UPIU_RPMB_WLUN:
-        dev = &u->rpmb_wlu->qdev;
+        lu = &u->rpmb_wlu;
         break;
     default:
-        dev = &u->lus[lun]->qdev;
+        lu = u->lus[lun];
     }
 
-    SCSIRequest *scsi_req = scsi_req_new(
-        dev, task_tag, lun, req->req_upiu.sc.cdb, UFS_CDB_SIZE, req);
-
-    uint32_t len = scsi_req_enqueue(scsi_req);
-    if (len) {
-        scsi_req_continue(scsi_req);
-    }
-
-    return UFS_REQUEST_NO_COMPLETE;
+    return lu->scsi_op(lu, req);
 }
 
 static UfsReqResult ufs_exec_nop_cmd(UfsRequest *req)
@@ -769,10 +1111,13 @@ static uint32_t ufs_read_attr_value(UfsHc *u, uint8_t idn)
     return 0;
 }
 
-static void ufs_write_attr_value(UfsHc *u, uint8_t idn, uint32_t value)
+static QueryRespCode ufs_write_attr_value(UfsHc *u, uint8_t idn, uint32_t value)
 {
     switch (idn) {
     case UFS_QUERY_ATTR_IDN_ACTIVE_ICC_LVL:
+        if (value > UFS_QUERY_ATTR_ACTIVE_ICC_MAXVALUE) {
+            return UFS_QUERY_RESULT_INVALID_VALUE;
+        }
         u->attributes.active_icc_level = value;
         break;
     case UFS_QUERY_ATTR_IDN_MAX_DATA_IN:
@@ -800,6 +1145,7 @@ static void ufs_write_attr_value(UfsHc *u, uint8_t idn, uint32_t value)
         u->attributes.psa_data_size = cpu_to_be32(value);
         break;
     }
+    return UFS_QUERY_RESULT_SUCCESS;
 }
 
 static QueryRespCode ufs_exec_query_attr(UfsRequest *req, int op)
@@ -816,13 +1162,13 @@ static QueryRespCode ufs_exec_query_attr(UfsRequest *req, int op)
 
     if (op == UFS_QUERY_ATTR_READ) {
         value = ufs_read_attr_value(u, idn);
+        ret = UFS_QUERY_RESULT_SUCCESS;
     } else {
-        value = be32_to_cpu(req->req_upiu.qr.value);
-        ufs_write_attr_value(u, idn, value);
+        value = req->req_upiu.qr.value;
+        ret = ufs_write_attr_value(u, idn, value);
     }
-
     req->rsp_upiu.qr.value = cpu_to_be32(value);
-    return UFS_QUERY_RESULT_SUCCESS;
+    return ret;
 }
 
 static const RpmbUnitDescriptor rpmb_unit_desc = {
@@ -838,7 +1184,7 @@ static QueryRespCode ufs_read_unit_desc(UfsRequest *req)
     uint8_t lun = req->req_upiu.qr.index;
 
     if (lun != UFS_UPIU_RPMB_WLUN &&
-        (lun > UFS_MAX_LUS || u->lus[lun] == NULL)) {
+        (lun >= UFS_MAX_LUS || u->lus[lun] == NULL)) {
         trace_ufs_err_query_invalid_index(req->req_upiu.qr.opcode, lun);
         return UFS_QUERY_RESULT_INVALID_INDEX;
     }
@@ -945,9 +1291,12 @@ static QueryRespCode ufs_read_desc(UfsRequest *req)
     UfsHc *u = req->hc;
     QueryRespCode status;
     uint8_t idn = req->req_upiu.qr.idn;
+    uint8_t selector = req->req_upiu.qr.selector;
     uint16_t length = be16_to_cpu(req->req_upiu.qr.length);
     InterconnectDescriptor desc;
-
+    if (selector != 0) {
+        return UFS_QUERY_RESULT_INVALID_SELECTOR;
+    }
     switch (idn) {
     case UFS_QUERY_DESC_IDN_DEVICE:
         memcpy(&req->rsp_upiu.qr.data, &u->device_desc, sizeof(u->device_desc));
@@ -993,10 +1342,6 @@ static QueryRespCode ufs_read_desc(UfsRequest *req)
     if (length > req->rsp_upiu.qr.data[0]) {
         length = req->rsp_upiu.qr.data[0];
     }
-    req->rsp_upiu.qr.opcode = req->req_upiu.qr.opcode;
-    req->rsp_upiu.qr.idn = req->req_upiu.qr.idn;
-    req->rsp_upiu.qr.index = req->req_upiu.qr.index;
-    req->rsp_upiu.qr.selector = req->req_upiu.qr.selector;
     req->rsp_upiu.qr.length = cpu_to_be16(length);
 
     return status;
@@ -1077,6 +1422,7 @@ static UfsReqResult ufs_exec_query_cmd(UfsRequest *req)
     data_segment_length = be16_to_cpu(req->rsp_upiu.qr.length);
     ufs_build_upiu_header(req, UFS_UPIU_TRANSACTION_QUERY_RSP, 0, status, 0,
                           data_segment_length);
+    ufs_build_query_response(req);
 
     if (status != UFS_QUERY_RESULT_SUCCESS) {
         return UFS_REQUEST_FAIL;
@@ -1137,7 +1483,7 @@ static void ufs_process_req(void *opaque)
     }
 }
 
-static void ufs_complete_req(UfsRequest *req, UfsReqResult req_result)
+void ufs_complete_req(UfsRequest *req, UfsReqResult req_result)
 {
     UfsHc *u = req->hc;
     assert(req->state == UFS_REQUEST_RUNNING);
@@ -1148,9 +1494,16 @@ static void ufs_complete_req(UfsRequest *req, UfsReqResult req_result)
         req->utrd.header.dword_2 = cpu_to_le32(UFS_OCS_INVALID_CMD_TABLE_ATTR);
     }
 
-    trace_ufs_complete_req(req->slot);
     req->state = UFS_REQUEST_COMPLETE;
-    qemu_bh_schedule(u->complete_bh);
+
+    if (ufs_mcq_req(req)) {
+        trace_ufs_mcq_complete_req(req->sq->sqid);
+        QTAILQ_INSERT_TAIL(&req->sq->cq->req_list, req, entry);
+        qemu_bh_schedule(req->sq->cq->bh);
+    } else {
+        trace_ufs_complete_req(req->slot);
+        qemu_bh_schedule(u->complete_bh);
+    }
 }
 
 static void ufs_clear_req(UfsRequest *req)
@@ -1159,6 +1512,7 @@ static void ufs_clear_req(UfsRequest *req)
         qemu_sglist_destroy(req->sg);
         g_free(req->sg);
         req->sg = NULL;
+        req->data_len = 0;
     }
 
     memset(&req->utrd, 0, sizeof(req->utrd));
@@ -1219,6 +1573,11 @@ static bool ufs_check_constraints(UfsHc *u, Error **errp)
         return false;
     }
 
+    if (u->params.mcq_maxq >= UFS_MAX_MCQ_QNUM) {
+        error_setg(errp, "mcq-maxq must be less than %d", UFS_MAX_MCQ_QNUM);
+        return false;
+    }
+
     return true;
 }
 
@@ -1250,15 +1609,24 @@ static void ufs_init_state(UfsHc *u)
                                          &DEVICE(u)->mem_reentrancy_guard);
     u->complete_bh = qemu_bh_new_guarded(ufs_sendback_req, u,
                                          &DEVICE(u)->mem_reentrancy_guard);
+
+    if (u->params.mcq) {
+        memset(u->sq, 0, sizeof(u->sq));
+        memset(u->cq, 0, sizeof(u->cq));
+    }
 }
 
 static void ufs_init_hc(UfsHc *u)
 {
     uint32_t cap = 0;
+    uint32_t mcqconfig = 0;
+    uint32_t mcqcap = 0;
 
-    u->reg_size = pow2ceil(sizeof(UfsReg));
+    u->reg_size = pow2ceil(ufs_reg_size(u));
 
     memset(&u->reg, 0, sizeof(u->reg));
+    memset(&u->mcq_reg, 0, sizeof(u->mcq_reg));
+    memset(&u->mcq_op_reg, 0, sizeof(u->mcq_op_reg));
     cap = FIELD_DP32(cap, CAP, NUTRS, (u->params.nutrs - 1));
     cap = FIELD_DP32(cap, CAP, RTT, 2);
     cap = FIELD_DP32(cap, CAP, NUTMRS, (u->params.nutmrs - 1));
@@ -1267,7 +1635,29 @@ static void ufs_init_hc(UfsHc *u)
     cap = FIELD_DP32(cap, CAP, OODDS, 0);
     cap = FIELD_DP32(cap, CAP, UICDMETMS, 0);
     cap = FIELD_DP32(cap, CAP, CS, 0);
+    cap = FIELD_DP32(cap, CAP, LSDBS, 1);
+    cap = FIELD_DP32(cap, CAP, MCQS, u->params.mcq);
     u->reg.cap = cap;
+
+    if (u->params.mcq) {
+        mcqconfig = FIELD_DP32(mcqconfig, MCQCONFIG, MAC, 0x1f);
+        u->reg.mcqconfig = mcqconfig;
+
+        mcqcap = FIELD_DP32(mcqcap, MCQCAP, MAXQ, u->params.mcq_maxq - 1);
+        mcqcap = FIELD_DP32(mcqcap, MCQCAP, RRP, 1);
+        mcqcap = FIELD_DP32(mcqcap, MCQCAP, QCFGPTR, UFS_MCQ_QCFGPTR);
+        u->reg.mcqcap = mcqcap;
+
+        for (int i = 0; i < ARRAY_SIZE(u->mcq_reg); i++) {
+            uint64_t addr = ufs_mcq_op_reg_addr(u, i);
+            u->mcq_reg[i].sqdao = addr;
+            u->mcq_reg[i].sqisao = addr + sizeof(UfsMcqSqReg);
+            addr += sizeof(UfsMcqSqReg);
+            u->mcq_reg[i].cqdao = addr + sizeof(UfsMcqSqIntReg);
+            addr += sizeof(UfsMcqSqIntReg);
+            u->mcq_reg[i].cqisao = addr + sizeof(UfsMcqCqReg);
+        }
+    }
     u->reg.ver = UFS_SPEC_VER;
 
     memset(&u->device_desc, 0, sizeof(DeviceDescriptor));
@@ -1317,28 +1707,6 @@ static void ufs_init_hc(UfsHc *u)
     u->flags.permanently_disable_fw_update = 1;
 }
 
-static bool ufs_init_wlu(UfsHc *u, UfsWLu **wlu, uint8_t wlun, Error **errp)
-{
-    UfsWLu *new_wlu = UFSWLU(qdev_new(TYPE_UFS_WLU));
-
-    qdev_prop_set_uint32(DEVICE(new_wlu), "lun", wlun);
-
-    /*
-     * The well-known lu shares the same bus as the normal lu. If the well-known
-     * lu writes the same channel value as the normal lu, the report will be
-     * made not only for the normal lu but also for the well-known lu at
-     * REPORT_LUN time. To prevent this, the channel value of normal lu is fixed
-     * to 0 and the channel value of well-known lu is fixed to 1.
-     */
-    qdev_prop_set_uint32(DEVICE(new_wlu), "channel", 1);
-    if (!qdev_realize_and_unref(DEVICE(new_wlu), BUS(&u->bus), errp)) {
-        return false;
-    }
-
-    *wlu = new_wlu;
-    return true;
-}
-
 static void ufs_realize(PCIDevice *pci_dev, Error **errp)
 {
     UfsHc *u = UFS(pci_dev);
@@ -1349,52 +1717,20 @@ static void ufs_realize(PCIDevice *pci_dev, Error **errp)
 
     qbus_init(&u->bus, sizeof(UfsBus), TYPE_UFS_BUS, &pci_dev->qdev,
               u->parent_obj.qdev.id);
-    u->bus.parent_bus.info = &ufs_scsi_info;
 
     ufs_init_state(u);
     ufs_init_hc(u);
     ufs_init_pci(u, pci_dev);
 
-    if (!ufs_init_wlu(u, &u->report_wlu, UFS_UPIU_REPORT_LUNS_WLUN, errp)) {
-        return;
-    }
-
-    if (!ufs_init_wlu(u, &u->dev_wlu, UFS_UPIU_UFS_DEVICE_WLUN, errp)) {
-        return;
-    }
-
-    if (!ufs_init_wlu(u, &u->boot_wlu, UFS_UPIU_BOOT_WLUN, errp)) {
-        return;
-    }
-
-    if (!ufs_init_wlu(u, &u->rpmb_wlu, UFS_UPIU_RPMB_WLUN, errp)) {
-        return;
-    }
+    ufs_init_wlu(&u->report_wlu, UFS_UPIU_REPORT_LUNS_WLUN);
+    ufs_init_wlu(&u->dev_wlu, UFS_UPIU_UFS_DEVICE_WLUN);
+    ufs_init_wlu(&u->boot_wlu, UFS_UPIU_BOOT_WLUN);
+    ufs_init_wlu(&u->rpmb_wlu, UFS_UPIU_RPMB_WLUN);
 }
 
 static void ufs_exit(PCIDevice *pci_dev)
 {
     UfsHc *u = UFS(pci_dev);
-
-    if (u->dev_wlu) {
-        object_unref(OBJECT(u->dev_wlu));
-        u->dev_wlu = NULL;
-    }
-
-    if (u->report_wlu) {
-        object_unref(OBJECT(u->report_wlu));
-        u->report_wlu = NULL;
-    }
-
-    if (u->rpmb_wlu) {
-        object_unref(OBJECT(u->rpmb_wlu));
-        u->rpmb_wlu = NULL;
-    }
-
-    if (u->boot_wlu) {
-        object_unref(OBJECT(u->boot_wlu));
-        u->boot_wlu = NULL;
-    }
 
     qemu_bh_delete(u->doorbell_bh);
     qemu_bh_delete(u->complete_bh);
@@ -1403,12 +1739,25 @@ static void ufs_exit(PCIDevice *pci_dev)
         ufs_clear_req(&u->req_list[i]);
     }
     g_free(u->req_list);
+
+    for (int i = 0; i < ARRAY_SIZE(u->sq); i++) {
+        if (u->sq[i]) {
+            ufs_mcq_delete_sq(u, i);
+        }
+    }
+    for (int i = 0; i < ARRAY_SIZE(u->cq); i++) {
+        if (u->cq[i]) {
+            ufs_mcq_delete_cq(u, i);
+        }
+    }
 }
 
 static Property ufs_props[] = {
     DEFINE_PROP_STRING("serial", UfsHc, params.serial),
     DEFINE_PROP_UINT8("nutrs", UfsHc, params.nutrs, 32),
     DEFINE_PROP_UINT8("nutmrs", UfsHc, params.nutmrs, 8),
+    DEFINE_PROP_BOOL("mcq", UfsHc, params.mcq, false),
+    DEFINE_PROP_UINT8("mcq-maxq", UfsHc, params.mcq_maxq, 2),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -1437,43 +1786,26 @@ static void ufs_class_init(ObjectClass *oc, void *data)
 static bool ufs_bus_check_address(BusState *qbus, DeviceState *qdev,
                                   Error **errp)
 {
-    SCSIDevice *dev = SCSI_DEVICE(qdev);
-    UfsBusClass *ubc = UFS_BUS_GET_CLASS(qbus);
-    UfsHc *u = UFS(qbus->parent);
-
-    if (strcmp(object_get_typename(OBJECT(dev)), TYPE_UFS_WLU) == 0) {
-        if (dev->lun != UFS_UPIU_REPORT_LUNS_WLUN &&
-            dev->lun != UFS_UPIU_UFS_DEVICE_WLUN &&
-            dev->lun != UFS_UPIU_BOOT_WLUN && dev->lun != UFS_UPIU_RPMB_WLUN) {
-            error_setg(errp, "bad well-known lun: %d", dev->lun);
-            return false;
-        }
-
-        if ((dev->lun == UFS_UPIU_REPORT_LUNS_WLUN && u->report_wlu != NULL) ||
-            (dev->lun == UFS_UPIU_UFS_DEVICE_WLUN && u->dev_wlu != NULL) ||
-            (dev->lun == UFS_UPIU_BOOT_WLUN && u->boot_wlu != NULL) ||
-            (dev->lun == UFS_UPIU_RPMB_WLUN && u->rpmb_wlu != NULL)) {
-            error_setg(errp, "well-known lun %d already exists", dev->lun);
-            return false;
-        }
-
-        return true;
-    }
-
-    if (strcmp(object_get_typename(OBJECT(dev)), TYPE_UFS_LU) != 0) {
+    if (strcmp(object_get_typename(OBJECT(qdev)), TYPE_UFS_LU) != 0) {
         error_setg(errp, "%s cannot be connected to ufs-bus",
-                   object_get_typename(OBJECT(dev)));
+                   object_get_typename(OBJECT(qdev)));
         return false;
     }
 
-    return ubc->parent_check_address(qbus, qdev, errp);
+    return true;
+}
+
+static char *ufs_bus_get_dev_path(DeviceState *dev)
+{
+    BusState *bus = qdev_get_parent_bus(dev);
+
+    return qdev_get_dev_path(bus->parent);
 }
 
 static void ufs_bus_class_init(ObjectClass *class, void *data)
 {
     BusClass *bc = BUS_CLASS(class);
-    UfsBusClass *ubc = UFS_BUS_CLASS(class);
-    ubc->parent_check_address = bc->check_address;
+    bc->get_dev_path = ufs_bus_get_dev_path;
     bc->check_address = ufs_bus_check_address;
 }
 
@@ -1487,7 +1819,7 @@ static const TypeInfo ufs_info = {
 
 static const TypeInfo ufs_bus_info = {
     .name = TYPE_UFS_BUS,
-    .parent = TYPE_SCSI_BUS,
+    .parent = TYPE_BUS,
     .class_init = ufs_bus_class_init,
     .class_size = sizeof(UfsBusClass),
     .instance_size = sizeof(UfsBus),

@@ -28,7 +28,6 @@ mappings = {
     "armv7": "arm",
     "armv8-a" : ["aarch64", "aarch64_be"],
     "avr" : "avr",
-    "cris" : "cris",
     # no hexagon in upstream gdb
     "hppa1.0" : "hppa",
     "i386" : "i386",
@@ -37,7 +36,6 @@ mappings = {
     "m68k" : "m68k",
     "MicroBlaze" : "microblaze",
     "mips:isa64" : ["mips64", "mips64el"],
-    "nios2" : "nios2",
     "or1k" : "or1k",
     "powerpc:common" : "ppc",
     "powerpc:common64" : ["ppc64", "ppc64le"],

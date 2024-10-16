@@ -584,7 +584,9 @@ static int alloc_code_gen_buffer_splitwx_memfd(size_t size, Error **errp)
 
     buf_rx = mmap(NULL, size, host_prot_read_exec(), MAP_SHARED, fd, 0);
     if (buf_rx == MAP_FAILED) {
-        goto fail_rx;
+        error_setg_errno(errp, errno,
+                         "failed to map shared memory for execute");
+        goto fail;
     }
 
     close(fd);
@@ -594,12 +596,8 @@ static int alloc_code_gen_buffer_splitwx_memfd(size_t size, Error **errp)
 
     return PROT_READ | PROT_WRITE;
 
- fail_rx:
-    error_setg_errno(errp, errno, "failed to map shared memory for execute");
  fail:
-    if (buf_rx != MAP_FAILED) {
-        munmap(buf_rx, size);
-    }
+    /* buf_rx is always equal to MAP_FAILED here and does not require cleanup */
     if (buf_rw) {
         munmap(buf_rw, size);
     }
@@ -733,7 +731,7 @@ static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
  * and then assigning regions to TCG threads so that the threads can translate
  * code in parallel without synchronization.
  *
- * In softmmu the number of TCG threads is bounded by max_cpus, so we use at
+ * In system-mode the number of TCG threads is bounded by max_cpus, so we use at
  * least max_cpus regions in MTTCG. In !MTTCG we use a single region.
  * Note that the TCG options from the command-line (i.e. -accel accel=tcg,[...])
  * must have been parsed before calling this function, since it calls
@@ -749,7 +747,7 @@ static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
  *
  * However, this user-mode limitation is unlikely to be a significant problem
  * in practice. Multi-threaded guests share most if not all of their translated
- * code, which makes parallel code generation less appealing than in softmmu.
+ * code, which makes parallel code generation less appealing than in system-mode
  */
 void tcg_region_init(size_t tb_size, int splitwx, unsigned max_cpus)
 {

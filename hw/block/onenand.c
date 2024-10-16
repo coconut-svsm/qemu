@@ -179,7 +179,7 @@ static const VMStateDescription vmstate_onenand = {
     .minimum_version_id = 1,
     .pre_save = onenand_pre_save,
     .post_load = onenand_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(current_direction, OneNANDState),
         VMSTATE_INT32(cycle, OneNANDState),
         VMSTATE_INT32(otpmode, OneNANDState),
@@ -846,7 +846,7 @@ static void onenand_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = onenand_realize;
-    dc->reset = onenand_system_reset;
+    device_class_set_legacy_reset(dc, onenand_system_reset);
     device_class_set_props(dc, onenand_properties);
 }
 

@@ -48,7 +48,7 @@ static const VMStateDescription vmstate_mpc8xxx_gpio = {
     .name = "mpc8xxx_gpio",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(dir, MPC8XXXGPIOState),
         VMSTATE_UINT32(odr, MPC8XXXGPIOState),
         VMSTATE_UINT32(dat, MPC8XXXGPIOState),
@@ -205,7 +205,7 @@ static void mpc8xxx_gpio_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_mpc8xxx_gpio;
-    dc->reset = mpc8xxx_gpio_reset;
+    device_class_set_legacy_reset(dc, mpc8xxx_gpio_reset);
 }
 
 static const TypeInfo mpc8xxx_gpio_info = {

@@ -21,25 +21,28 @@ system_ss.add(files(
   'migration-hmp-cmds.c',
   'migration.c',
   'multifd.c',
+  'multifd-nocomp.c',
   'multifd-zlib.c',
-  'ram-compress.c',
+  'multifd-zero-page.c',
   'options.c',
   'postcopy-ram.c',
   'savevm.c',
   'socket.c',
   'tls.c',
   'threadinfo.c',
-), gnutls)
+), gnutls, zlib)
 
 if get_option('replication').allowed()
   system_ss.add(files('colo-failover.c', 'colo.c'))
+else
+  system_ss.add(files('colo-stubs.c'))
 endif
 
 system_ss.add(when: rdma, if_true: files('rdma.c'))
-if get_option('live_block_migration').allowed()
-  system_ss.add(files('block.c'))
-endif
 system_ss.add(when: zstd, if_true: files('multifd-zstd.c'))
+system_ss.add(when: qpl, if_true: files('multifd-qpl.c'))
+system_ss.add(when: uadk, if_true: files('multifd-uadk.c'))
+system_ss.add(when: qatzip, if_true: files('multifd-qatzip.c'))
 
 specific_ss.add(when: 'CONFIG_SYSTEM_ONLY',
                 if_true: files('ram.c',

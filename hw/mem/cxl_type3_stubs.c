@@ -33,7 +33,8 @@ void qmp_cxl_inject_dram_event(const char *path, CxlEventLog log, uint8_t flags,
                                bool has_bank, uint8_t bank,
                                bool has_row, uint32_t row,
                                bool has_column, uint16_t column,
-                               bool has_correction_mask, uint64List *correction_mask,
+                               bool has_correction_mask,
+                               uint64List *correction_mask,
                                Error **errp) {}
 
 void qmp_cxl_inject_memory_module_event(const char *path, CxlEventLog log,
@@ -45,7 +46,7 @@ void qmp_cxl_inject_memory_module_event(const char *path, CxlEventLog log,
                                         int16_t temperature,
                                         uint32_t dirty_shutdown_count,
                                         uint32_t corrected_volatile_error_count,
-                                        uint32_t corrected_persistent_error_count,
+                                        uint32_t corrected_persist_error_count,
                                         Error **errp) {}
 
 void qmp_cxl_inject_poison(const char *path, uint64_t start, uint64_t length,
@@ -62,6 +63,31 @@ void qmp_cxl_inject_uncorrectable_errors(const char *path,
 }
 
 void qmp_cxl_inject_correctable_error(const char *path, CxlCorErrorType type,
+                                      Error **errp)
+{
+    error_setg(errp, "CXL Type 3 support is not compiled in");
+}
+
+void qmp_cxl_add_dynamic_capacity(const char *path,
+                                  uint16_t host_id,
+                                  CxlExtentSelectionPolicy sel_policy,
+                                  uint8_t region,
+                                  const char *tag,
+                                  CxlDynamicCapacityExtentList *extents,
+                                  Error **errp)
+{
+    error_setg(errp, "CXL Type 3 support is not compiled in");
+}
+
+void qmp_cxl_release_dynamic_capacity(const char *path, uint16_t host_id,
+                                      CxlExtentRemovalPolicy removal_policy,
+                                      bool has_forced_removal,
+                                      bool forced_removal,
+                                      bool has_sanitize_on_release,
+                                      bool sanitize_on_release,
+                                      uint8_t region,
+                                      const char *tag,
+                                      CxlDynamicCapacityExtentList *extents,
                                       Error **errp)
 {
     error_setg(errp, "CXL Type 3 support is not compiled in");

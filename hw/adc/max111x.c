@@ -96,7 +96,7 @@ static const VMStateDescription vmstate_max111x = {
     .name = "max111x",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_SSI_PERIPHERAL(parent_obj, MAX111xState),
         VMSTATE_UINT8(tb1, MAX111xState),
         VMSTATE_UINT8(rb2, MAX111xState),
@@ -183,7 +183,7 @@ static void max111x_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     k->transfer = max111x_transfer;
-    dc->reset = max111x_reset;
+    device_class_set_legacy_reset(dc, max111x_reset);
     dc->vmsd = &vmstate_max111x;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }

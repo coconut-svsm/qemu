@@ -57,7 +57,7 @@ static const VMStateDescription vmstate_arm_sysctl = {
     .name = "realview_sysctl",
     .version_id = 4,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(leds, arm_sysctl_state),
         VMSTATE_UINT16(lockval, arm_sysctl_state),
         VMSTATE_UINT32(cfgdata1, arm_sysctl_state),
@@ -640,7 +640,7 @@ static void arm_sysctl_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = arm_sysctl_realize;
-    dc->reset = arm_sysctl_reset;
+    device_class_set_legacy_reset(dc, arm_sysctl_reset);
     dc->vmsd = &vmstate_arm_sysctl;
     device_class_set_props(dc, arm_sysctl_properties);
 }

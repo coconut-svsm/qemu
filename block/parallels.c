@@ -200,7 +200,7 @@ static int mark_used(BlockDriverState *bs, unsigned long *bitmap,
  * bitmap anyway, as much as we can. This information will be used for
  * error resolution.
  */
-static int parallels_fill_used_bitmap(BlockDriverState *bs)
+static int GRAPH_RDLOCK parallels_fill_used_bitmap(BlockDriverState *bs)
 {
     BDRVParallelsState *s = bs->opaque;
     int64_t payload_bytes;
@@ -415,14 +415,10 @@ parallels_co_flush_to_os(BlockDriverState *bs)
     return 0;
 }
 
-
-static int coroutine_fn parallels_co_block_status(BlockDriverState *bs,
-                                                  bool want_zero,
-                                                  int64_t offset,
-                                                  int64_t bytes,
-                                                  int64_t *pnum,
-                                                  int64_t *map,
-                                                  BlockDriverState **file)
+static int coroutine_fn GRAPH_RDLOCK
+parallels_co_block_status(BlockDriverState *bs, bool want_zero, int64_t offset,
+                          int64_t bytes, int64_t *pnum, int64_t *map,
+                          BlockDriverState **file)
 {
     BDRVParallelsState *s = bs->opaque;
     int count;
@@ -1189,7 +1185,7 @@ static int parallels_probe(const uint8_t *buf, int buf_size,
     return 0;
 }
 
-static int parallels_update_header(BlockDriverState *bs)
+static int GRAPH_RDLOCK parallels_update_header(BlockDriverState *bs)
 {
     BDRVParallelsState *s = bs->opaque;
     unsigned size = MAX(bdrv_opt_mem_align(bs->file->bs),
@@ -1258,6 +1254,8 @@ static int parallels_open(BlockDriverState *bs, QDict *options, int flags,
     if (ret < 0) {
         return ret;
     }
+
+    GRAPH_RDLOCK_GUARD_MAINLOOP();
 
     file_nb_sectors = bdrv_nb_sectors(bs->file->bs);
     if (file_nb_sectors < 0) {
@@ -1366,9 +1364,9 @@ static int parallels_open(BlockDriverState *bs, QDict *options, int flags,
     error_setg(&s->migration_blocker, "The Parallels format used by node '%s' "
                "does not support live migration",
                bdrv_get_device_or_node_name(bs));
-    ret = migrate_add_blocker(s->migration_blocker, errp);
+
+    ret = migrate_add_blocker_normal(&s->migration_blocker, errp);
     if (ret < 0) {
-        error_setg(errp, "Migration blocker error");
         goto fail;
     }
     qemu_co_mutex_init(&s->lock);
@@ -1403,7 +1401,7 @@ static int parallels_open(BlockDriverState *bs, QDict *options, int flags,
         ret = bdrv_check(bs, &res, BDRV_FIX_ERRORS | BDRV_FIX_LEAKS);
         if (ret < 0) {
             error_setg_errno(errp, -ret, "Could not repair corrupted image");
-            migrate_del_blocker(s->migration_blocker);
+            migrate_del_blocker(&s->migration_blocker);
             goto fail;
         }
     }
@@ -1420,7 +1418,6 @@ fail:
      */
     parallels_free_used_bitmap(bs);
 
-    error_free(s->migration_blocker);
     g_free(s->bat_dirty_bmap);
     qemu_vfree(s->header);
     return ret;
@@ -1430,6 +1427,8 @@ fail:
 static void parallels_close(BlockDriverState *bs)
 {
     BDRVParallelsState *s = bs->opaque;
+
+    GRAPH_RDLOCK_GUARD_MAINLOOP();
 
     if ((bs->open_flags & BDRV_O_RDWR) && !(bs->open_flags & BDRV_O_INACTIVE)) {
         s->header->inuse = 0;
@@ -1445,8 +1444,7 @@ static void parallels_close(BlockDriverState *bs)
     g_free(s->bat_dirty_bmap);
     qemu_vfree(s->header);
 
-    migrate_del_blocker(s->migration_blocker);
-    error_free(s->migration_blocker);
+    migrate_del_blocker(&s->migration_blocker);
 }
 
 static bool parallels_is_support_dirty_bitmaps(BlockDriverState *bs)

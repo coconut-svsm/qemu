@@ -68,7 +68,7 @@ test_deps = {
   'test-qht-par': qht_bench,
 }
 
-if have_tools and have_vhost_user and targetos == 'linux'
+if have_tools and have_vhost_user and host_os == 'linux'
   executable('vhost-user-bridge',
              sources: files('vhost-user-bridge.c'),
              dependencies: [qemuutil, vhost_user])
@@ -76,12 +76,13 @@ endif
 
 subdir('decode')
 
-if 'CONFIG_TCG' in config_all
+if 'CONFIG_TCG' in config_all_accel
   subdir('fp')
+  subdir('tcg/plugins')
 endif
 
-subdir('plugin')
 subdir('unit')
 subdir('qapi-schema')
 subdir('qtest')
 subdir('migration')
+subdir('functional')

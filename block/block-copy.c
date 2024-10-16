@@ -137,6 +137,7 @@ typedef struct BlockCopyState {
     CoMutex lock;
     int64_t in_flight_bytes;
     BlockCopyMethod method;
+    bool discard_source;
     BlockReqList reqs;
     QLIST_HEAD(, BlockCopyCallState) calls;
     /*
@@ -313,7 +314,12 @@ static int64_t block_copy_calculate_cluster_size(BlockDriverState *target,
 {
     int ret;
     BlockDriverInfo bdi;
-    bool target_does_cow = bdrv_backing_chain_next(target);
+    bool target_does_cow;
+
+    GLOBAL_STATE_CODE();
+    GRAPH_RDLOCK_GUARD_MAINLOOP();
+
+    target_does_cow = bdrv_backing_chain_next(target);
 
     /*
      * If there is no backing file on the target, we cannot rely on COW if our
@@ -346,7 +352,9 @@ static int64_t block_copy_calculate_cluster_size(BlockDriverState *target,
 }
 
 BlockCopyState *block_copy_state_new(BdrvChild *source, BdrvChild *target,
+                                     BlockDriverState *copy_bitmap_bs,
                                      const BdrvDirtyBitmap *bitmap,
+                                     bool discard_source,
                                      Error **errp)
 {
     ERRP_GUARD();
@@ -355,12 +363,14 @@ BlockCopyState *block_copy_state_new(BdrvChild *source, BdrvChild *target,
     BdrvDirtyBitmap *copy_bitmap;
     bool is_fleecing;
 
+    GLOBAL_STATE_CODE();
+
     cluster_size = block_copy_calculate_cluster_size(target->bs, errp);
     if (cluster_size < 0) {
         return NULL;
     }
 
-    copy_bitmap = bdrv_create_dirty_bitmap(source->bs, cluster_size, NULL,
+    copy_bitmap = bdrv_create_dirty_bitmap(copy_bitmap_bs, cluster_size, NULL,
                                            errp);
     if (!copy_bitmap) {
         return NULL;
@@ -392,7 +402,9 @@ BlockCopyState *block_copy_state_new(BdrvChild *source, BdrvChild *target,
      * For more information see commit f8d59dfb40bb and test
      * tests/qemu-iotests/222
      */
+    bdrv_graph_rdlock_main_loop();
     is_fleecing = bdrv_chain_contains(target->bs, source->bs);
+    bdrv_graph_rdunlock_main_loop();
 
     s = g_new(BlockCopyState, 1);
     *s = (BlockCopyState) {
@@ -408,6 +420,7 @@ BlockCopyState *block_copy_state_new(BdrvChild *source, BdrvChild *target,
                                     cluster_size),
     };
 
+    s->discard_source = discard_source;
     block_copy_set_copy_opts(s, false, false);
 
     ratelimit_init(&s->rate_limit);
@@ -578,6 +591,14 @@ static coroutine_fn int block_copy_task_entry(AioTask *task)
     }
     co_put_to_shres(s->mem, t->req.bytes);
     block_copy_task_end(t, ret);
+
+    if (s->discard_source && ret == 0) {
+        int64_t nbytes =
+            MIN(t->req.offset + t->req.bytes, s->len) - t->req.offset;
+        WITH_GRAPH_RDLOCK_GUARD() {
+            bdrv_co_pdiscard(s->source, t->req.offset, nbytes);
+        }
+    }
 
     return ret;
 }

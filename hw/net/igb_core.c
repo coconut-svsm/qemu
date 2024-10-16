@@ -161,14 +161,6 @@ igb_intmgr_timer_resume(IGBIntrDelayTimer *timer)
 }
 
 static void
-igb_intmgr_timer_pause(IGBIntrDelayTimer *timer)
-{
-    if (timer->running) {
-        timer_del(timer->timer);
-    }
-}
-
-static void
 igb_intrmgr_on_msix_throttling_timer(void *opaque)
 {
     IGBIntrDelayTimer *timer = opaque;
@@ -209,16 +201,6 @@ igb_intrmgr_resume(IGBCore *core)
 
     for (i = 0; i < IGB_INTR_NUM; i++) {
         igb_intmgr_timer_resume(&core->eitr[i]);
-    }
-}
-
-static void
-igb_intrmgr_pause(IGBCore *core)
-{
-    int i;
-
-    for (i = 0; i < IGB_INTR_NUM; i++) {
-        igb_intmgr_timer_pause(&core->eitr[i]);
     }
 }
 
@@ -2477,10 +2459,12 @@ static void igb_set_vfmailbox(IGBCore *core, int index, uint32_t val)
     }
 }
 
-static void igb_vf_reset(IGBCore *core, uint16_t vfn)
+void igb_core_vf_reset(IGBCore *core, uint16_t vfn)
 {
     uint16_t qn0 = vfn;
     uint16_t qn1 = vfn + IGB_NUM_VM_POOLS;
+
+    trace_igb_core_vf_reset(vfn);
 
     /* disable Rx and Tx for the VF*/
     core->mac[RXDCTL0 + (qn0 * 16)] &= ~E1000_RXDCTL_QUEUE_ENABLE;
@@ -2560,7 +2544,7 @@ static void igb_set_vtctrl(IGBCore *core, int index, uint32_t val)
 
     if (val & E1000_CTRL_RST) {
         vfn = (index - PVTCTRL0) / 0x40;
-        igb_vf_reset(core, vfn);
+        igb_core_vf_reset(core, vfn);
     }
 }
 
@@ -4288,12 +4272,6 @@ igb_core_read(IGBCore *core, hwaddr addr, unsigned size)
     return 0;
 }
 
-static inline void
-igb_autoneg_pause(IGBCore *core)
-{
-    timer_del(core->autoneg_timer);
-}
-
 static void
 igb_autoneg_resume(IGBCore *core)
 {
@@ -4302,22 +4280,6 @@ igb_autoneg_resume(IGBCore *core)
         qemu_get_queue(core->owner_nic)->link_down = false;
         timer_mod(core->autoneg_timer,
                   qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 500);
-    }
-}
-
-static void
-igb_vm_state_change(void *opaque, bool running, RunState state)
-{
-    IGBCore *core = opaque;
-
-    if (running) {
-        trace_e1000e_vm_state_running();
-        igb_intrmgr_resume(core);
-        igb_autoneg_resume(core);
-    } else {
-        trace_e1000e_vm_state_stopped();
-        igb_autoneg_pause(core);
-        igb_intrmgr_pause(core);
     }
 }
 
@@ -4332,8 +4294,6 @@ igb_core_pci_realize(IGBCore        *core,
     core->autoneg_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                        igb_autoneg_timer, core);
     igb_intrmgr_pci_realize(core);
-
-    core->vmstate = qemu_add_vm_change_state_handler(igb_vm_state_change, core);
 
     for (i = 0; i < IGB_NUM_QUEUES; i++) {
         net_tx_pkt_init(&core->tx[i].tx_pkt, E1000E_MAX_TX_FRAGS);
@@ -4357,8 +4317,6 @@ igb_core_pci_uninit(IGBCore *core)
     timer_free(core->autoneg_timer);
 
     igb_intrmgr_pci_unint(core);
-
-    qemu_del_vm_change_state_handler(core->vmstate);
 
     for (i = 0; i < IGB_NUM_QUEUES; i++) {
         net_tx_pkt_uninit(core->tx[i].tx_pkt);
@@ -4583,6 +4541,13 @@ igb_core_post_load(IGBCore *core)
      * to link status bit in core.mac[STATUS].
      */
     nc->link_down = (core->mac[STATUS] & E1000_STATUS_LU) == 0;
+
+    /*
+     * we need to restart intrmgr timers, as an older version of
+     * QEMU can have stopped them before migration
+     */
+    igb_intrmgr_resume(core);
+    igb_autoneg_resume(core);
 
     return 0;
 }

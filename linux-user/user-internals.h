@@ -18,7 +18,7 @@
 #ifndef LINUX_USER_USER_INTERNALS_H
 #define LINUX_USER_USER_INTERNALS_H
 
-#include "exec/user/thunk.h"
+#include "user/thunk.h"
 #include "exec/exec-all.h"
 #include "exec/tb-flush.h"
 #include "qemu/log.h"
@@ -71,7 +71,7 @@ const char *target_strerror(int err);
 int get_osversion(void);
 void init_qemu_uname_release(void);
 void fork_start(void);
-void fork_end(int child);
+void fork_end(pid_t pid);
 
 /**
  * probe_guest_base:

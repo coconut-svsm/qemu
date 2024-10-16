@@ -24,7 +24,6 @@ riscv_ss.add(files(
   'zce_helper.c',
   'vcrypto_helper.c'
 ))
-riscv_ss.add(when: 'CONFIG_KVM', if_true: files('kvm.c'), if_false: files('kvm-stub.c'))
 
 riscv_system_ss = ss.source_set()
 riscv_system_ss.add(files(
@@ -34,9 +33,13 @@ riscv_system_ss.add(files(
   'monitor.c',
   'machine.c',
   'pmu.c',
+  'th_csr.c',
   'time_helper.c',
   'riscv-qmp-cmds.c',
 ))
 
+subdir('tcg')
+subdir('kvm')
+
 target_arch += {'riscv': riscv_ss}
-target_softmmu_arch += {'riscv': riscv_system_ss}
+target_system_arch += {'riscv': riscv_system_ss}

@@ -645,7 +645,7 @@ static const VMStateDescription vmstate_aspeed_timer = {
     .name = "aspeed.timer",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(id, AspeedTimer),
         VMSTATE_INT32(level, AspeedTimer),
         VMSTATE_TIMER(timer, AspeedTimer),
@@ -659,7 +659,7 @@ static const VMStateDescription vmstate_aspeed_timer_state = {
     .name = "aspeed.timerctrl",
     .version_id = 2,
     .minimum_version_id = 2,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(ctrl, AspeedTimerCtrlState),
         VMSTATE_UINT32(ctrl2, AspeedTimerCtrlState),
         VMSTATE_UINT32(ctrl3, AspeedTimerCtrlState),
@@ -682,7 +682,7 @@ static void timer_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = aspeed_timer_realize;
-    dc->reset = aspeed_timer_reset;
+    device_class_set_legacy_reset(dc, aspeed_timer_reset);
     dc->desc = "ASPEED Timer";
     dc->vmsd = &vmstate_aspeed_timer_state;
     device_class_set_props(dc, aspeed_timer_properties);

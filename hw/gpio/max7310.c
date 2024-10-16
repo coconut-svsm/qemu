@@ -155,7 +155,7 @@ static const VMStateDescription vmstate_max7310 = {
     .name = "max7310",
     .version_id = 0,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_INT32(i2c_command_byte, MAX7310State),
         VMSTATE_INT32(len, MAX7310State),
         VMSTATE_UINT8(level, MAX7310State),
@@ -198,7 +198,7 @@ static void max7310_class_init(ObjectClass *klass, void *data)
     k->event = max7310_event;
     k->recv = max7310_rx;
     k->send = max7310_tx;
-    dc->reset = max7310_reset;
+    device_class_set_legacy_reset(dc, max7310_reset);
     dc->vmsd = &vmstate_max7310;
 }
 

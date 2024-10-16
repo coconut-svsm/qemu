@@ -17,7 +17,6 @@
 #ifndef FSL_IMX6UL_H
 #define FSL_IMX6UL_H
 
-#include "hw/arm/boot.h"
 #include "hw/cpu/a15mpcore.h"
 #include "hw/misc/imx6ul_ccm.h"
 #include "hw/misc/imx6_src.h"
@@ -183,6 +182,8 @@ enum FslIMX6ULMemoryMap {
     FSL_IMX6UL_ENET1_ADDR           = 0x02188000,
 
     FSL_IMX6UL_USBO2_USBMISC_ADDR   = 0x02184800,
+    FSL_IMX6UL_USBO2_USBMISC_SIZE   = 0x200,
+
     FSL_IMX6UL_USBO2_USB1_ADDR      = 0x02184000,
     FSL_IMX6UL_USBO2_USB2_ADDR      = 0x02184200,
 

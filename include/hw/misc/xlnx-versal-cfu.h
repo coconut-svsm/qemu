@@ -12,7 +12,7 @@
  *     https://www.xilinx.com/support/documentation/architecture-manuals/am011-versal-acap-trm.pdf
  *
  * [2] Versal ACAP Register Reference,
- *     https://www.xilinx.com/htmldocs/registers/am012/am012-versal-register-reference.html
+ *     https://docs.xilinx.com/r/en-US/am012-versal-register-reference/CFU_CSR-Module
  */
 #ifndef HW_MISC_XLNX_VERSAL_CFU_APB_H
 #define HW_MISC_XLNX_VERSAL_CFU_APB_H
@@ -22,13 +22,13 @@
 #include "hw/misc/xlnx-cfi-if.h"
 #include "qemu/fifo32.h"
 
-#define TYPE_XLNX_VERSAL_CFU_APB "xlnx,versal-cfu-apb"
+#define TYPE_XLNX_VERSAL_CFU_APB "xlnx-versal-cfu-apb"
 OBJECT_DECLARE_SIMPLE_TYPE(XlnxVersalCFUAPB, XLNX_VERSAL_CFU_APB)
 
-#define TYPE_XLNX_VERSAL_CFU_FDRO "xlnx,versal-cfu-fdro"
+#define TYPE_XLNX_VERSAL_CFU_FDRO "xlnx-versal-cfu-fdro"
 OBJECT_DECLARE_SIMPLE_TYPE(XlnxVersalCFUFDRO, XLNX_VERSAL_CFU_FDRO)
 
-#define TYPE_XLNX_VERSAL_CFU_SFR "xlnx,versal-cfu-sfr"
+#define TYPE_XLNX_VERSAL_CFU_SFR "xlnx-versal-cfu-sfr"
 OBJECT_DECLARE_SIMPLE_TYPE(XlnxVersalCFUSFR, XLNX_VERSAL_CFU_SFR)
 
 REG32(CFU_ISR, 0x0)

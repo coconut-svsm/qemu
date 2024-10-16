@@ -231,7 +231,7 @@ static const VMStateDescription vmstate_rng = {
     .name = "nrf51_soc.rng",
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(active, NRF51RNGState),
         VMSTATE_UINT32(event_valrdy, NRF51RNGState),
         VMSTATE_UINT32(shortcut_stop_on_valrdy, NRF51RNGState),
@@ -247,7 +247,7 @@ static void nrf51_rng_class_init(ObjectClass *klass, void *data)
 
     device_class_set_props(dc, nrf51_rng_properties);
     dc->vmsd = &vmstate_rng;
-    dc->reset = nrf51_rng_reset;
+    device_class_set_legacy_reset(dc, nrf51_rng_reset);
 }
 
 static const TypeInfo nrf51_rng_info = {

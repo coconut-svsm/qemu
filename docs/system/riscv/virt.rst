@@ -12,7 +12,7 @@ Supported devices
 
 The ``virt`` machine supports the following devices:
 
-* Up to 8 generic RV32GC/RV64GC cores, with optional extensions
+* Up to 512 generic RV32GC/RV64GC cores, with optional extensions
 * Core Local Interruptor (CLINT)
 * Platform-Level Interrupt Controller (PLIC)
 * CFI parallel NOR flash memory
@@ -94,6 +94,11 @@ The following machine-specific options are supported:
   When this option is "on", ACLINT devices will be emulated instead of
   SiFive CLINT. When not specified, this option is assumed to be "off".
   This option is restricted to the TCG accelerator.
+
+- acpi=[on|off|auto]
+
+  When this option is "on" (which is the default), ACPI tables are generated and
+  exposed as firmware tables etc/acpi/rsdp and etc/acpi/tables.
 
 - aia=[none|aplic|aplic-imsic]
 

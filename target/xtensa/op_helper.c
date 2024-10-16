@@ -28,6 +28,7 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
+#include "exec/page-protection.h"
 #include "qemu/host-utils.h"
 #include "exec/exec-all.h"
 #include "qemu/atomic.h"
@@ -37,7 +38,7 @@
 
 void HELPER(update_ccount)(CPUXtensaState *env)
 {
-    XtensaCPU *cpu = XTENSA_CPU(env_cpu(env));
+    XtensaCPU *cpu = env_archcpu(env);
     uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     env->ccount_time = now;
@@ -58,7 +59,7 @@ void HELPER(wsr_ccount)(CPUXtensaState *env, uint32_t v)
 
 void HELPER(update_ccompare)(CPUXtensaState *env, uint32_t i)
 {
-    XtensaCPU *cpu = XTENSA_CPU(env_cpu(env));
+    XtensaCPU *cpu = env_archcpu(env);
     uint64_t dcc;
 
     qatomic_and(&env->sregs[INTSET],

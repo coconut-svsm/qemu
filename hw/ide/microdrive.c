@@ -31,8 +31,8 @@
 #include "sysemu/dma.h"
 #include "hw/irq.h"
 
-#include "hw/ide/internal.h"
 #include "qom/object.h"
+#include "ide-internal.h"
 
 #define TYPE_MICRODRIVE "microdrive"
 OBJECT_DECLARE_SIMPLE_TYPE(MicroDriveState, MICRODRIVE)
@@ -336,7 +336,7 @@ static const VMStateDescription vmstate_microdrive = {
     .name = "microdrive",
     .version_id = 3,
     .minimum_version_id = 0,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8(opt, MicroDriveState),
         VMSTATE_UINT8(stat, MicroDriveState),
         VMSTATE_UINT8(pins, MicroDriveState),
@@ -622,7 +622,7 @@ static void microdrive_class_init(ObjectClass *oc, void *data)
     pcc->io_write = md_common_write;
 
     dc->realize = microdrive_realize;
-    dc->reset = md_reset;
+    device_class_set_legacy_reset(dc, md_reset);
     dc->vmsd = &vmstate_microdrive;
 }
 

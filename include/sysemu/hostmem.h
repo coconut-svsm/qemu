@@ -47,7 +47,15 @@ OBJECT_DECLARE_TYPE(HostMemoryBackend, HostMemoryBackendClass,
 struct HostMemoryBackendClass {
     ObjectClass parent_class;
 
-    void (*alloc)(HostMemoryBackend *backend, Error **errp);
+    /**
+     * alloc: Allocate memory from backend.
+     *
+     * @backend: the #HostMemoryBackend.
+     * @errp: pointer to Error*, to store an error if it happens.
+     *
+     * Return: true on success, else false setting @errp with error.
+     */
+    bool (*alloc)(HostMemoryBackend *backend, Error **errp);
 };
 
 /**
@@ -66,6 +74,7 @@ struct HostMemoryBackend {
     uint64_t size;
     bool merge, dump, use_canonical_path;
     bool prealloc, is_mapped, share, reserve;
+    bool guest_memfd, aligned;
     uint32_t prealloc_threads;
     ThreadContext *prealloc_context;
     DECLARE_BITMAP(host_nodes, MAX_NODES + 1);

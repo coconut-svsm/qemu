@@ -214,7 +214,7 @@ static void sifive_uart_reset_enter(Object *obj, ResetType type)
     s->rx_fifo_len = 0;
 }
 
-static void sifive_uart_reset_hold(Object *obj)
+static void sifive_uart_reset_hold(Object *obj, ResetType type)
 {
     SiFiveUARTState *s = SIFIVE_UART(obj);
     qemu_irq_lower(s->irq);
@@ -224,7 +224,7 @@ static const VMStateDescription vmstate_sifive_uart = {
     .name = TYPE_SIFIVE_UART,
     .version_id = 1,
     .minimum_version_id = 1,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(rx_fifo, SiFiveUARTState,
                             SIFIVE_UART_RX_FIFO_SIZE),
         VMSTATE_UINT8(rx_fifo_len, SiFiveUARTState),

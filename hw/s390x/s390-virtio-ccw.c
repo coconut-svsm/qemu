@@ -14,6 +14,8 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "exec/ram_addr.h"
+#include "exec/confidential-guest-support.h"
+#include "hw/boards.h"
 #include "hw/s390x/s390-virtio-hcall.h"
 #include "hw/s390x/sclp.h"
 #include "hw/s390x/s390_flic.h"
@@ -45,24 +47,10 @@
 #include "target/s390x/kvm/pv.h"
 #include "migration/blocker.h"
 #include "qapi/visitor.h"
+#include "hw/s390x/cpu-topology.h"
+#include CONFIG_DEVICES
 
 static Error *pv_mig_blocker;
-
-S390CPU *s390_cpu_addr2state(uint16_t cpu_addr)
-{
-    static MachineState *ms;
-
-    if (!ms) {
-        ms = MACHINE(qdev_get_machine());
-        g_assert(ms->possible_cpus);
-    }
-
-    /* CPU address corresponds to the core_id and the index */
-    if (cpu_addr >= ms->possible_cpus->len) {
-        return NULL;
-    }
-    return S390_CPU(ms->possible_cpus->cpus[cpu_addr].cpu);
-}
 
 static S390CPU *s390x_new_cpu(const char *typename, uint32_t core_id,
                               Error **errp)
@@ -117,20 +105,33 @@ static void subsystem_reset(void)
     DeviceState *dev;
     int i;
 
+    /*
+     * ISM firmware is sensitive to unexpected changes to the IOMMU, which can
+     * occur during reset of the vfio-pci device (unmap of entire aperture).
+     * Ensure any passthrough ISM devices are reset now, while CPUs are paused
+     * but before vfio-pci cleanup occurs.
+     */
+    s390_pci_ism_reset();
+
     for (i = 0; i < ARRAY_SIZE(reset_dev_types); i++) {
         dev = DEVICE(object_resolve_path_type("", reset_dev_types[i], NULL));
         if (dev) {
             device_cold_reset(dev);
         }
     }
+    if (s390_has_topology()) {
+        s390_topology_reset();
+    }
 }
 
 static int virtio_ccw_hcall_notify(const uint64_t *args)
 {
     uint64_t subch_id = args[0];
-    uint64_t queue = args[1];
+    uint64_t data = args[1];
     SubchDev *sch;
+    VirtIODevice *vdev;
     int cssid, ssid, schid, m;
+    uint16_t vq_idx = data;
 
     if (ioinst_disassemble_sch_ident(subch_id, &m, &cssid, &ssid, &schid)) {
         return -EINVAL;
@@ -139,12 +140,19 @@ static int virtio_ccw_hcall_notify(const uint64_t *args)
     if (!sch || !css_subch_visible(sch)) {
         return -EINVAL;
     }
-    if (queue >= VIRTIO_QUEUE_MAX) {
+
+    vdev = virtio_ccw_get_vdev(sch);
+    if (vq_idx >= VIRTIO_QUEUE_MAX || !virtio_queue_get_num(vdev, vq_idx)) {
         return -EINVAL;
     }
-    virtio_queue_notify(virtio_ccw_get_vdev(sch), queue);
-    return 0;
 
+    if (virtio_vdev_has_feature(vdev, VIRTIO_F_NOTIFICATION_DATA)) {
+        virtio_queue_set_shadow_avail_idx(virtio_get_queue(vdev, vq_idx),
+                                          (data >> 16) & 0xFFFF);
+    }
+
+    virtio_queue_notify(vdev, vq_idx);
+    return 0;
 }
 
 static int virtio_ccw_hcall_early_printk(const uint64_t *args)
@@ -217,37 +225,41 @@ static void s390_init_ipl_dev(const char *kernel_filename,
 
 static void s390_create_virtio_net(BusState *bus, const char *name)
 {
-    int i;
+    DeviceState *dev;
+    int cnt = 0;
 
-    for (i = 0; i < nb_nics; i++) {
-        NICInfo *nd = &nd_table[i];
-        DeviceState *dev;
-
-        qemu_check_nic_model(nd, "virtio");
-
-        dev = qdev_new(name);
-        qdev_set_nic_properties(dev, nd);
+    while ((dev = qemu_create_nic_device(name, true, "virtio"))) {
+        g_autofree char *childname = g_strdup_printf("%s[%d]", name, cnt++);
+        object_property_add_child(OBJECT(bus), childname, OBJECT(dev));
         qdev_realize_and_unref(dev, bus, &error_fatal);
     }
 }
 
-static void s390_create_sclpconsole(const char *type, Chardev *chardev)
+static void s390_create_sclpconsole(SCLPDevice *sclp,
+                                    const char *type, Chardev *chardev)
 {
+    SCLPEventFacility *ef = sclp->event_facility;
+    BusState *ev_fac_bus = sclp_get_event_facility_bus(ef);
     DeviceState *dev;
 
     dev = qdev_new(type);
+    object_property_add_child(OBJECT(ef), type, OBJECT(dev));
     qdev_prop_set_chr(dev, "chardev", chardev);
-    qdev_realize_and_unref(dev, sclp_get_event_facility_bus(), &error_fatal);
+    qdev_realize_and_unref(dev, ev_fac_bus, &error_fatal);
 }
 
 static void ccw_init(MachineState *machine)
 {
     MachineClass *mc = MACHINE_GET_CLASS(machine);
+    S390CcwMachineState *ms = S390_CCW_MACHINE(machine);
     int ret;
     VirtualCssBus *css_bus;
     DeviceState *dev;
 
-    s390_sclp_init();
+    ms->sclp = SCLP(object_new(TYPE_SCLP));
+    object_property_add_child(OBJECT(machine), TYPE_SCLP, OBJECT(ms->sclp));
+    qdev_realize_and_unref(DEVICE(ms->sclp), NULL, &error_fatal);
+
     /* init memory + setup max page size. Required for the CPU model */
     s390_memory_init(machine->ram);
 
@@ -255,7 +267,9 @@ static void ccw_init(MachineState *machine)
     s390_init_cpus(machine);
 
     /* Need CPU model to be determined before we can set up PV */
-    s390_pv_init(machine->cgs, &error_fatal);
+    if (machine->cgs) {
+        confidential_guest_kvm_init(machine->cgs, &error_fatal);
+    }
 
     s390_flic_init();
 
@@ -283,21 +297,19 @@ static void ccw_init(MachineState *machine)
     s390_enable_css_support(s390_cpu_addr2state(0));
 
     ret = css_create_css_image(VIRTUAL_CSSID, true);
-
     assert(ret == 0);
-    if (css_migration_enabled()) {
-        css_register_vmstate();
-    }
+
+    css_register_vmstate();
 
     /* Create VirtIO network adapters */
     s390_create_virtio_net(BUS(css_bus), mc->default_nic);
 
     /* init consoles */
     if (serial_hd(0)) {
-        s390_create_sclpconsole("sclpconsole", serial_hd(0));
+        s390_create_sclpconsole(ms->sclp, "sclpconsole", serial_hd(0));
     }
     if (serial_hd(1)) {
-        s390_create_sclpconsole("sclplmconsole", serial_hd(1));
+        s390_create_sclpconsole(ms->sclp, "sclplmconsole", serial_hd(1));
     }
 
     /* init the TOD clock */
@@ -307,11 +319,19 @@ static void ccw_init(MachineState *machine)
 static void s390_cpu_plug(HotplugHandler *hotplug_dev,
                         DeviceState *dev, Error **errp)
 {
+    ERRP_GUARD();
     MachineState *ms = MACHINE(hotplug_dev);
     S390CPU *cpu = S390_CPU(dev);
 
     g_assert(!ms->possible_cpus->cpus[cpu->env.core_id].cpu);
-    ms->possible_cpus->cpus[cpu->env.core_id].cpu = OBJECT(dev);
+    ms->possible_cpus->cpus[cpu->env.core_id].cpu = CPU(dev);
+
+    if (s390_has_topology()) {
+        s390_topology_setup_cpu(ms, cpu, errp);
+        if (*errp) {
+            return;
+        }
+    }
 
     if (dev->hotplugged) {
         raise_irq_cpu_hotplug();
@@ -332,8 +352,7 @@ static void s390_machine_unprotect(S390CcwMachineState *ms)
         s390_pv_vm_disable();
     }
     ms->pv = false;
-    migrate_del_blocker(pv_mig_blocker);
-    error_free_or_abort(&pv_mig_blocker);
+    migrate_del_blocker(&pv_mig_blocker);
     ram_block_discard_disable(false);
 }
 
@@ -356,11 +375,10 @@ static int s390_machine_protect(S390CcwMachineState *ms)
 
     error_setg(&pv_mig_blocker,
                "protected VMs are currently not migratable.");
-    rc = migrate_add_blocker(pv_mig_blocker, &local_err);
+    rc = migrate_add_blocker(&pv_mig_blocker, &local_err);
     if (rc) {
         ram_block_discard_disable(false);
         error_report_err(local_err);
-        error_free_or_abort(&pv_mig_blocker);
         return rc;
     }
 
@@ -368,8 +386,7 @@ static int s390_machine_protect(S390CcwMachineState *ms)
     rc = s390_pv_vm_enable();
     if (rc) {
         ram_block_discard_disable(false);
-        migrate_del_blocker(pv_mig_blocker);
-        error_free_or_abort(&pv_mig_blocker);
+        migrate_del_blocker(&pv_mig_blocker);
         return rc;
     }
 
@@ -382,7 +399,7 @@ static int s390_machine_protect(S390CcwMachineState *ms)
     }
 
     /* Set SE header and unpack */
-    rc = s390_ipl_prepare_pv_header();
+    rc = s390_ipl_prepare_pv_header(&local_err);
     if (rc) {
         goto out_err;
     }
@@ -401,6 +418,9 @@ static int s390_machine_protect(S390CcwMachineState *ms)
     return rc;
 
 out_err:
+    if (local_err) {
+        error_report_err(local_err);
+    }
     s390_machine_unprotect(ms);
     return rc;
 }
@@ -562,11 +582,20 @@ static const CPUArchIdList *s390_possible_cpu_arch_ids(MachineState *ms)
                                   sizeof(CPUArchId) * max_cpus);
     ms->possible_cpus->len = max_cpus;
     for (i = 0; i < ms->possible_cpus->len; i++) {
+        CpuInstanceProperties *props = &ms->possible_cpus->cpus[i].props;
+
         ms->possible_cpus->cpus[i].type = ms->cpu_type;
         ms->possible_cpus->cpus[i].vcpus_count = 1;
         ms->possible_cpus->cpus[i].arch_id = i;
-        ms->possible_cpus->cpus[i].props.has_core_id = true;
-        ms->possible_cpus->cpus[i].props.core_id = i;
+
+        props->has_core_id = true;
+        props->core_id = i;
+        props->has_socket_id = true;
+        props->socket_id = s390_std_socket(i, &ms->smp);
+        props->has_book_id = true;
+        props->book_id = s390_std_book(i, &ms->smp);
+        props->has_drawer_id = true;
+        props->drawer_id = s390_std_drawer(i, &ms->smp);
     }
 
     return ms->possible_cpus;
@@ -732,7 +761,6 @@ static void ccw_machine_class_init(ObjectClass *oc, void *data)
 
     s390mc->ri_allowed = true;
     s390mc->cpu_model_allowed = true;
-    s390mc->css_migration_enabled = true;
     s390mc->hpage_1m_allowed = true;
     s390mc->max_threads = 1;
     mc->init = ccw_init;
@@ -744,6 +772,8 @@ static void ccw_machine_class_init(ObjectClass *oc, void *data)
     mc->no_sdcard = 1;
     mc->max_cpus = S390_MAX_CPUS;
     mc->has_hotpluggable_cpus = true;
+    mc->smp_props.books_supported = true;
+    mc->smp_props.drawers_supported = true;
     assert(!mc->get_hotplug_handler);
     mc->get_hotplug_handler = s390_get_hotplug_handler;
     mc->cpu_index_to_instance_props = s390_cpu_index_to_props;
@@ -800,49 +830,96 @@ static const TypeInfo ccw_machine_info = {
     },
 };
 
-bool css_migration_enabled(void)
-{
-    return get_machine_class()->css_migration_enabled;
-}
-
-#define DEFINE_CCW_MACHINE(suffix, verstr, latest)                            \
-    static void ccw_machine_##suffix##_class_init(ObjectClass *oc,            \
-                                                  void *data)                 \
+#define DEFINE_CCW_MACHINE_IMPL(latest, ...)                                  \
+    static void MACHINE_VER_SYM(class_init, ccw, __VA_ARGS__)(                \
+        ObjectClass *oc,                                                      \
+        void *data)                                                           \
     {                                                                         \
         MachineClass *mc = MACHINE_CLASS(oc);                                 \
-        ccw_machine_##suffix##_class_options(mc);                             \
-        mc->desc = "Virtual s390x machine (version " verstr ")";              \
+        MACHINE_VER_SYM(class_options, ccw, __VA_ARGS__)(mc);                 \
+        mc->desc = "Virtual s390x machine (version " MACHINE_VER_STR(__VA_ARGS__) ")"; \
+        MACHINE_VER_DEPRECATION(__VA_ARGS__);                                 \
         if (latest) {                                                         \
             mc->alias = "s390-ccw-virtio";                                    \
             mc->is_default = true;                                            \
         }                                                                     \
     }                                                                         \
-    static void ccw_machine_##suffix##_instance_init(Object *obj)             \
+    static void MACHINE_VER_SYM(instance_init, ccw, __VA_ARGS__)(Object *obj) \
     {                                                                         \
         MachineState *machine = MACHINE(obj);                                 \
-        current_mc = S390_CCW_MACHINE_CLASS(MACHINE_GET_CLASS(machine));          \
-        ccw_machine_##suffix##_instance_options(machine);                     \
+        current_mc = S390_CCW_MACHINE_CLASS(MACHINE_GET_CLASS(machine));      \
+        MACHINE_VER_SYM(instance_options, ccw, __VA_ARGS__)(machine);         \
     }                                                                         \
-    static const TypeInfo ccw_machine_##suffix##_info = {                     \
-        .name = MACHINE_TYPE_NAME("s390-ccw-virtio-" verstr),                 \
-        .parent = TYPE_S390_CCW_MACHINE,                                      \
-        .class_init = ccw_machine_##suffix##_class_init,                      \
-        .instance_init = ccw_machine_##suffix##_instance_init,                \
-    };                                                                        \
-    static void ccw_machine_register_##suffix(void)                           \
+    static const TypeInfo MACHINE_VER_SYM(info, ccw, __VA_ARGS__) =           \
     {                                                                         \
-        type_register_static(&ccw_machine_##suffix##_info);                   \
+        .name = MACHINE_VER_TYPE_NAME("s390-ccw-virtio", __VA_ARGS__),        \
+        .parent = TYPE_S390_CCW_MACHINE,                                      \
+        .class_init = MACHINE_VER_SYM(class_init, ccw, __VA_ARGS__),          \
+        .instance_init = MACHINE_VER_SYM(instance_init, ccw, __VA_ARGS__),    \
+    };                                                                        \
+    static void MACHINE_VER_SYM(register, ccw, __VA_ARGS__)(void)             \
+    {                                                                         \
+        MACHINE_VER_DELETION(__VA_ARGS__);                                    \
+        type_register_static(&MACHINE_VER_SYM(info, ccw, __VA_ARGS__));       \
     }                                                                         \
-    type_init(ccw_machine_register_##suffix)
+    type_init(MACHINE_VER_SYM(register, ccw, __VA_ARGS__))
+
+#define DEFINE_CCW_MACHINE_AS_LATEST(major, minor) \
+    DEFINE_CCW_MACHINE_IMPL(true, major, minor)
+
+#define DEFINE_CCW_MACHINE(major, minor) \
+    DEFINE_CCW_MACHINE_IMPL(false, major, minor)
+
+
+static void ccw_machine_9_2_instance_options(MachineState *machine)
+{
+}
+
+static void ccw_machine_9_2_class_options(MachineClass *mc)
+{
+}
+DEFINE_CCW_MACHINE_AS_LATEST(9, 2);
+
+static void ccw_machine_9_1_instance_options(MachineState *machine)
+{
+    ccw_machine_9_2_instance_options(machine);
+}
+
+static void ccw_machine_9_1_class_options(MachineClass *mc)
+{
+    ccw_machine_9_2_class_options(mc);
+    compat_props_add(mc->compat_props, hw_compat_9_1, hw_compat_9_1_len);
+}
+DEFINE_CCW_MACHINE(9, 1);
+
+static void ccw_machine_9_0_instance_options(MachineState *machine)
+{
+    ccw_machine_9_1_instance_options(machine);
+}
+
+static void ccw_machine_9_0_class_options(MachineClass *mc)
+{
+    static GlobalProperty compat[] = {
+        { TYPE_QEMU_S390_FLIC, "migrate-all-state", "off", },
+    };
+
+    ccw_machine_9_1_class_options(mc);
+    compat_props_add(mc->compat_props, hw_compat_9_0, hw_compat_9_0_len);
+    compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
+}
+DEFINE_CCW_MACHINE(9, 0);
 
 static void ccw_machine_8_2_instance_options(MachineState *machine)
 {
+    ccw_machine_9_0_instance_options(machine);
 }
 
 static void ccw_machine_8_2_class_options(MachineClass *mc)
 {
+    ccw_machine_9_0_class_options(mc);
+    compat_props_add(mc->compat_props, hw_compat_8_2, hw_compat_8_2_len);
 }
-DEFINE_CCW_MACHINE(8_2, "8.2", true);
+DEFINE_CCW_MACHINE(8, 2);
 
 static void ccw_machine_8_1_instance_options(MachineState *machine)
 {
@@ -853,8 +930,10 @@ static void ccw_machine_8_1_class_options(MachineClass *mc)
 {
     ccw_machine_8_2_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_8_1, hw_compat_8_1_len);
+    mc->smp_props.drawers_supported = false;
+    mc->smp_props.books_supported = false;
 }
-DEFINE_CCW_MACHINE(8_1, "8.1", false);
+DEFINE_CCW_MACHINE(8, 1);
 
 static void ccw_machine_8_0_instance_options(MachineState *machine)
 {
@@ -866,7 +945,7 @@ static void ccw_machine_8_0_class_options(MachineClass *mc)
     ccw_machine_8_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_8_0, hw_compat_8_0_len);
 }
-DEFINE_CCW_MACHINE(8_0, "8.0", false);
+DEFINE_CCW_MACHINE(8, 0);
 
 static void ccw_machine_7_2_instance_options(MachineState *machine)
 {
@@ -878,7 +957,7 @@ static void ccw_machine_7_2_class_options(MachineClass *mc)
     ccw_machine_8_0_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_7_2, hw_compat_7_2_len);
 }
-DEFINE_CCW_MACHINE(7_2, "7.2", false);
+DEFINE_CCW_MACHINE(7, 2);
 
 static void ccw_machine_7_1_instance_options(MachineState *machine)
 {
@@ -902,7 +981,7 @@ static void ccw_machine_7_1_class_options(MachineClass *mc)
     compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
     s390mc->max_threads = S390_MAX_CPUS;
 }
-DEFINE_CCW_MACHINE(7_1, "7.1", false);
+DEFINE_CCW_MACHINE(7, 1);
 
 static void ccw_machine_7_0_instance_options(MachineState *machine)
 {
@@ -917,7 +996,7 @@ static void ccw_machine_7_0_class_options(MachineClass *mc)
     ccw_machine_7_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_7_0, hw_compat_7_0_len);
 }
-DEFINE_CCW_MACHINE(7_0, "7.0", false);
+DEFINE_CCW_MACHINE(7, 0);
 
 static void ccw_machine_6_2_instance_options(MachineState *machine)
 {
@@ -932,7 +1011,7 @@ static void ccw_machine_6_2_class_options(MachineClass *mc)
     ccw_machine_7_0_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_6_2, hw_compat_6_2_len);
 }
-DEFINE_CCW_MACHINE(6_2, "6.2", false);
+DEFINE_CCW_MACHINE(6, 2);
 
 static void ccw_machine_6_1_instance_options(MachineState *machine)
 {
@@ -950,7 +1029,7 @@ static void ccw_machine_6_1_class_options(MachineClass *mc)
     compat_props_add(mc->compat_props, hw_compat_6_1, hw_compat_6_1_len);
     mc->smp_props.prefer_sockets = true;
 }
-DEFINE_CCW_MACHINE(6_1, "6.1", false);
+DEFINE_CCW_MACHINE(6, 1);
 
 static void ccw_machine_6_0_instance_options(MachineState *machine)
 {
@@ -965,7 +1044,7 @@ static void ccw_machine_6_0_class_options(MachineClass *mc)
     ccw_machine_6_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_6_0, hw_compat_6_0_len);
 }
-DEFINE_CCW_MACHINE(6_0, "6.0", false);
+DEFINE_CCW_MACHINE(6, 0);
 
 static void ccw_machine_5_2_instance_options(MachineState *machine)
 {
@@ -977,7 +1056,7 @@ static void ccw_machine_5_2_class_options(MachineClass *mc)
     ccw_machine_6_0_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_5_2, hw_compat_5_2_len);
 }
-DEFINE_CCW_MACHINE(5_2, "5.2", false);
+DEFINE_CCW_MACHINE(5, 2);
 
 static void ccw_machine_5_1_instance_options(MachineState *machine)
 {
@@ -989,7 +1068,7 @@ static void ccw_machine_5_1_class_options(MachineClass *mc)
     ccw_machine_5_2_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_5_1, hw_compat_5_1_len);
 }
-DEFINE_CCW_MACHINE(5_1, "5.1", false);
+DEFINE_CCW_MACHINE(5, 1);
 
 static void ccw_machine_5_0_instance_options(MachineState *machine)
 {
@@ -1001,7 +1080,7 @@ static void ccw_machine_5_0_class_options(MachineClass *mc)
     ccw_machine_5_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_5_0, hw_compat_5_0_len);
 }
-DEFINE_CCW_MACHINE(5_0, "5.0", false);
+DEFINE_CCW_MACHINE(5, 0);
 
 static void ccw_machine_4_2_instance_options(MachineState *machine)
 {
@@ -1014,7 +1093,7 @@ static void ccw_machine_4_2_class_options(MachineClass *mc)
     mc->fixup_ram_size = s390_fixup_ram_size;
     compat_props_add(mc->compat_props, hw_compat_4_2, hw_compat_4_2_len);
 }
-DEFINE_CCW_MACHINE(4_2, "4.2", false);
+DEFINE_CCW_MACHINE(4, 2);
 
 static void ccw_machine_4_1_instance_options(MachineState *machine)
 {
@@ -1028,7 +1107,7 @@ static void ccw_machine_4_1_class_options(MachineClass *mc)
     ccw_machine_4_2_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_4_1, hw_compat_4_1_len);
 }
-DEFINE_CCW_MACHINE(4_1, "4.1", false);
+DEFINE_CCW_MACHINE(4, 1);
 
 static void ccw_machine_4_0_instance_options(MachineState *machine)
 {
@@ -1042,7 +1121,7 @@ static void ccw_machine_4_0_class_options(MachineClass *mc)
     ccw_machine_4_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_4_0, hw_compat_4_0_len);
 }
-DEFINE_CCW_MACHINE(4_0, "4.0", false);
+DEFINE_CCW_MACHINE(4, 0);
 
 static void ccw_machine_3_1_instance_options(MachineState *machine)
 {
@@ -1058,7 +1137,7 @@ static void ccw_machine_3_1_class_options(MachineClass *mc)
     ccw_machine_4_0_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_3_1, hw_compat_3_1_len);
 }
-DEFINE_CCW_MACHINE(3_1, "3.1", false);
+DEFINE_CCW_MACHINE(3, 1);
 
 static void ccw_machine_3_0_instance_options(MachineState *machine)
 {
@@ -1073,7 +1152,7 @@ static void ccw_machine_3_0_class_options(MachineClass *mc)
     ccw_machine_3_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_3_0, hw_compat_3_0_len);
 }
-DEFINE_CCW_MACHINE(3_0, "3.0", false);
+DEFINE_CCW_MACHINE(3, 0);
 
 static void ccw_machine_2_12_instance_options(MachineState *machine)
 {
@@ -1087,7 +1166,9 @@ static void ccw_machine_2_12_class_options(MachineClass *mc)
     ccw_machine_3_0_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_2_12, hw_compat_2_12_len);
 }
-DEFINE_CCW_MACHINE(2_12, "2.12", false);
+DEFINE_CCW_MACHINE(2, 12);
+
+#ifdef CONFIG_S390X_LEGACY_CPUS
 
 static void ccw_machine_2_11_instance_options(MachineState *machine)
 {
@@ -1108,7 +1189,7 @@ static void ccw_machine_2_11_class_options(MachineClass *mc)
     compat_props_add(mc->compat_props, hw_compat_2_11, hw_compat_2_11_len);
     compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
 }
-DEFINE_CCW_MACHINE(2_11, "2.11", false);
+DEFINE_CCW_MACHINE(2, 11);
 
 static void ccw_machine_2_10_instance_options(MachineState *machine)
 {
@@ -1120,7 +1201,7 @@ static void ccw_machine_2_10_class_options(MachineClass *mc)
     ccw_machine_2_11_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_2_10, hw_compat_2_10_len);
 }
-DEFINE_CCW_MACHINE(2_10, "2.10", false);
+DEFINE_CCW_MACHINE(2, 10);
 
 static void ccw_machine_2_9_instance_options(MachineState *machine)
 {
@@ -1134,17 +1215,17 @@ static void ccw_machine_2_9_instance_options(MachineState *machine)
 
 static void ccw_machine_2_9_class_options(MachineClass *mc)
 {
-    S390CcwMachineClass *s390mc = S390_CCW_MACHINE_CLASS(mc);
     static GlobalProperty compat[] = {
         { TYPE_S390_STATTRIB, "migration-enabled", "off", },
+        { TYPE_S390_FLIC_COMMON, "migration-enabled", "off", },
     };
 
     ccw_machine_2_10_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_2_9, hw_compat_2_9_len);
     compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
-    s390mc->css_migration_enabled = false;
+    css_migration_enabled = false;
 }
-DEFINE_CCW_MACHINE(2_9, "2.9", false);
+DEFINE_CCW_MACHINE(2, 9);
 
 static void ccw_machine_2_8_instance_options(MachineState *machine)
 {
@@ -1161,7 +1242,7 @@ static void ccw_machine_2_8_class_options(MachineClass *mc)
     compat_props_add(mc->compat_props, hw_compat_2_8, hw_compat_2_8_len);
     compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
 }
-DEFINE_CCW_MACHINE(2_8, "2.8", false);
+DEFINE_CCW_MACHINE(2, 8);
 
 static void ccw_machine_2_7_instance_options(MachineState *machine)
 {
@@ -1176,7 +1257,7 @@ static void ccw_machine_2_7_class_options(MachineClass *mc)
     ccw_machine_2_8_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_2_7, hw_compat_2_7_len);
 }
-DEFINE_CCW_MACHINE(2_7, "2.7", false);
+DEFINE_CCW_MACHINE(2, 7);
 
 static void ccw_machine_2_6_instance_options(MachineState *machine)
 {
@@ -1196,7 +1277,7 @@ static void ccw_machine_2_6_class_options(MachineClass *mc)
     compat_props_add(mc->compat_props, hw_compat_2_6, hw_compat_2_6_len);
     compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
 }
-DEFINE_CCW_MACHINE(2_6, "2.6", false);
+DEFINE_CCW_MACHINE(2, 6);
 
 static void ccw_machine_2_5_instance_options(MachineState *machine)
 {
@@ -1208,7 +1289,7 @@ static void ccw_machine_2_5_class_options(MachineClass *mc)
     ccw_machine_2_6_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_2_5, hw_compat_2_5_len);
 }
-DEFINE_CCW_MACHINE(2_5, "2.5", false);
+DEFINE_CCW_MACHINE(2, 5);
 
 static void ccw_machine_2_4_instance_options(MachineState *machine)
 {
@@ -1233,7 +1314,9 @@ static void ccw_machine_2_4_class_options(MachineClass *mc)
     compat_props_add(mc->compat_props, hw_compat_2_4, hw_compat_2_4_len);
     compat_props_add(mc->compat_props, compat, G_N_ELEMENTS(compat));
 }
-DEFINE_CCW_MACHINE(2_4, "2.4", false);
+DEFINE_CCW_MACHINE(2, 4);
+
+#endif
 
 static void ccw_machine_register_types(void)
 {

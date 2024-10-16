@@ -115,7 +115,7 @@ static const VMStateDescription vmstate_tpm_tis_i2c = {
     .version_id = 0,
     .pre_save  = tpm_tis_i2c_pre_save,
     .post_load  = tpm_tis_i2c_post_load,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_BUFFER(state.buffer, TPMStateI2C),
         VMSTATE_UINT16(state.rw_offset, TPMStateI2C),
         VMSTATE_UINT8(state.active_locty, TPMStateI2C),
@@ -538,7 +538,7 @@ static void tpm_tis_i2c_class_init(ObjectClass *klass, void *data)
     TPMIfClass *tc = TPM_IF_CLASS(klass);
 
     dc->realize = tpm_tis_i2c_realizefn;
-    dc->reset = tpm_tis_i2c_reset;
+    device_class_set_legacy_reset(dc, tpm_tis_i2c_reset);
     dc->vmsd = &vmstate_tpm_tis_i2c;
     device_class_set_props(dc, tpm_tis_i2c_properties);
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);

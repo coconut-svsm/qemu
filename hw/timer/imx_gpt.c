@@ -63,7 +63,7 @@ static const VMStateDescription vmstate_imx_timer_gpt = {
     .name = TYPE_IMX_GPT,
     .version_id = 3,
     .minimum_version_id = 3,
-    .fields = (VMStateField[]) {
+    .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cr, IMXGPTState),
         VMSTATE_UINT32(pr, IMXGPTState),
         VMSTATE_UINT32(sr, IMXGPTState),
@@ -524,7 +524,7 @@ static void imx_gpt_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = imx_gpt_realize;
-    dc->reset = imx_gpt_reset;
+    device_class_set_legacy_reset(dc, imx_gpt_reset);
     dc->vmsd = &vmstate_imx_timer_gpt;
     dc->desc = "i.MX general timer";
 }

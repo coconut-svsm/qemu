@@ -290,7 +290,7 @@ static void pxb_cxl_dev_reset(DeviceState *dev)
     uint32_t *write_msk = cxl_cstate->crb.cache_mem_regs_write_mask;
     int dsp_count = 0;
 
-    cxl_component_register_init_common(reg_state, write_msk, CXL2_ROOT_PORT);
+    cxl_component_register_init_common(reg_state, write_msk, CXL2_RC);
     /*
      * The CXL specification allows for host bridges with no HDM decoders
      * if they only have a single root port.
@@ -515,7 +515,7 @@ static void pxb_cxl_dev_class_init(ObjectClass *klass, void *data)
 
     /* Host bridges aren't hotpluggable. FIXME: spec reference */
     dc->hotpluggable = false;
-    dc->reset = pxb_cxl_dev_reset;
+    device_class_set_legacy_reset(dc, pxb_cxl_dev_reset);
 }
 
 static const TypeInfo pxb_cxl_dev_info = {

@@ -120,10 +120,15 @@ static const char *get_csr_name(unsigned num)
            csr_names[num] : "Undefined CSR";
 }
 
-#define output(C, INSN, FMT, ...)                                   \
-{                                                                   \
-    (C)->info->fprintf_func((C)->info->stream, "%08x   %-9s\t" FMT, \
-                            (C)->insn, INSN, ##__VA_ARGS__);        \
+#define output(C, INSN, FMT, ...)                                      \
+ {                                                                     \
+    if ((C)->info->show_opcodes) {                                     \
+        (C)->info->fprintf_func((C)->info->stream, "%08x   %-9s\t" FMT,\
+                            (C)->insn, INSN, ##__VA_ARGS__);           \
+    } else {                                                           \
+        (C)->info->fprintf_func((C)->info->stream, "%-9s\t" FMT,       \
+                            INSN, ##__VA_ARGS__);                      \
+    }                                                                  \
 }
 
 #include "decode-insns.c.inc"
@@ -188,6 +193,12 @@ static void output_hint_r_i(DisasContext *ctx, arg_hint_r_i *a,
                             const char *mnemonic)
 {
     output(ctx, mnemonic, "%d, r%d, %d", a->hint, a->rj, a->imm);
+}
+
+static void output_hint_rr(DisasContext *ctx, arg_hint_rr *a,
+                           const char *mnemonic)
+{
+    output(ctx, mnemonic, "%d, r%d, r%d", a->hint, a->rj, a->rk);
 }
 
 static void output_i(DisasContext *ctx, arg_i *a, const char *mnemonic)
@@ -549,6 +560,7 @@ INSN(ld_bu,        rr_i)
 INSN(ld_hu,        rr_i)
 INSN(ld_wu,        rr_i)
 INSN(preld,        hint_r_i)
+INSN(preldx,       hint_rr)
 INSN(fld_s,        fr_i)
 INSN(fst_s,        fr_i)
 INSN(fld_d,        fr_i)

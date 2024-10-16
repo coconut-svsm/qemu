@@ -1,7 +1,6 @@
 #ifndef HW_XEN_HVM_COMMON_H
 #define HW_XEN_HVM_COMMON_H
 
-#include "qemu/osdep.h"
 #include "qemu/units.h"
 
 #include "cpu.h"
@@ -16,7 +15,8 @@
 #include "qemu/error-report.h"
 #include <xen/hvm/ioreq.h>
 
-extern MemoryRegion ram_memory;
+extern MemoryRegion xen_memory;
+extern MemoryRegion xen_grants;
 extern MemoryListener xen_io_listener;
 extern DeviceListener xen_device_listener;
 
@@ -29,6 +29,8 @@ extern DeviceListener xen_device_listener;
 #define DPRINTF(fmt, ...) \
     do { } while (0)
 #endif
+
+#define XEN_GRANT_ADDR_OFF (1ULL << 63)
 
 static inline uint32_t xen_vcpu_eport(shared_iopage_t *shared_page, int i)
 {

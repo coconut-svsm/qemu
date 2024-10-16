@@ -278,32 +278,33 @@ static void vu_blk_exp_resize(void *opaque)
     vu_config_change_msg(&vexp->vu_server.vu_dev);
 }
 
-/* Called with vexp->export.ctx acquired */
 static void vu_blk_drained_begin(void *opaque)
 {
     VuBlkExport *vexp = opaque;
 
+    vexp->vu_server.quiescing = true;
     vhost_user_server_detach_aio_context(&vexp->vu_server);
 }
 
-/* Called with vexp->export.blk AioContext acquired */
 static void vu_blk_drained_end(void *opaque)
 {
     VuBlkExport *vexp = opaque;
 
+    vexp->vu_server.quiescing = false;
     vhost_user_server_attach_aio_context(&vexp->vu_server, vexp->export.ctx);
 }
 
 /*
- * Ensures that bdrv_drained_begin() waits until in-flight requests complete.
- *
- * Called with vexp->export.ctx acquired.
+ * Ensures that bdrv_drained_begin() waits until in-flight requests complete
+ * and the server->co_trip coroutine has terminated. It will be restarted in
+ * vhost_user_server_attach_aio_context().
  */
 static bool vu_blk_drained_poll(void *opaque)
 {
     VuBlkExport *vexp = opaque;
+    VuServer *server = &vexp->vu_server;
 
-    return vhost_user_server_has_in_flight(&vexp->vu_server);
+    return server->co_trip || vhost_user_server_has_in_flight(server);
 }
 
 static const BlockDevOps vu_blk_dev_ops = {

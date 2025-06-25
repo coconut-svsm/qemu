@@ -328,6 +328,34 @@ SRST
 ERST
 
     {
+        .name       = "snp_migrate",
+        .args_type  = "uri:s,address:o/h",
+        .params     = "uri address",
+        .help       = "Start SNP migration. Send migration data to uri.",
+        .cmd        = hmp_snp_migrate,
+    },
+
+SRST
+``snp_migrate`` *uri* *address*
+  Read migration data from migration page at *address* and send them through
+  channel specified by *uri*.
+ERST
+
+    {
+        .name       = "snp_migrate_incoming",
+        .args_type  = "uri:s,address:o/h",
+        .params     = "uri address",
+        .help       = "Listen on address for incoming SNP migration.",
+        .cmd        = hmp_snp_migrate_incoming,
+    },
+
+SRST
+``snp_migrate_incoming`` *uri* *address*
+  Listen for migration data on channel specified by *uri* and forward them to
+  migration page at *address*.
+ERST
+
+    {
         .name       = "savevm",
         .args_type  = "name:s?",
         .params     = "tag",

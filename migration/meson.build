@@ -28,6 +28,7 @@ system_ss.add(files(
   'postcopy-ram.c',
   'savevm.c',
   'socket.c',
+  'snp.c',
   'tls.c',
   'threadinfo.c',
 ), gnutls, zlib)

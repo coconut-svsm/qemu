@@ -16,6 +16,7 @@
 #include "qemu/osdep.h"
 #include "block/qapi.h"
 #include "migration/snapshot.h"
+#include "migration/snp.h"
 #include "monitor/hmp.h"
 #include "monitor/monitor.h"
 #include "qapi/error.h"
@@ -394,6 +395,48 @@ void hmp_delvm(Monitor *mon, const QDict *qdict)
     const char *name = qdict_get_str(qdict, "name");
 
     delete_snapshot(name, false, NULL, &err);
+    hmp_handle_error(mon, err);
+}
+
+void hmp_snp_migrate(Monitor *mon, const QDict *qdict)
+{
+    Error *err = NULL;
+    const char *uri = qdict_get_str(qdict, "uri");
+    uint64_t address = qdict_get_int(qdict, "address");
+    address = address >> 20; // FIXME: shifted value is obtained. Correcting.
+    MigrationChannelList *caps = NULL;
+    g_autoptr(MigrationChannel) channel = NULL;
+
+    if (!migrate_uri_parse(uri, &channel, &err)) {
+        goto end;
+    }
+    QAPI_LIST_PREPEND(caps, g_steal_pointer(&channel));
+
+    snp_migrate(caps, address, false, &err);
+    qapi_free_MigrationChannelList(caps);
+
+end:
+    hmp_handle_error(mon, err);
+}
+
+void hmp_snp_migrate_incoming(Monitor *mon, const QDict *qdict)
+{
+    Error *err = NULL;
+    const char *uri = qdict_get_str(qdict, "uri");
+    int64_t address = qdict_get_int(qdict, "address");
+    address = address >> 20; // FIXME: shifted value is obtained. Correcting.
+    MigrationChannelList *caps = NULL;
+    g_autoptr(MigrationChannel) channel = NULL;
+
+    if (!migrate_uri_parse(uri, &channel, &err)) {
+        goto end;
+    }
+    QAPI_LIST_PREPEND(caps, g_steal_pointer(&channel));
+
+    snp_migrate(caps, address, true, &err);
+    qapi_free_MigrationChannelList(caps);
+
+end:
     hmp_handle_error(mon, err);
 }
 

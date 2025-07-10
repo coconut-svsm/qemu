@@ -6123,11 +6123,26 @@ static int kvm_handle_plane_create_vcpu(CPUState *cpu, struct kvm_run *run)
     return 0;
 }
 
+static int kvm_handle_snp_run_vmpl(CPUState *cpu, struct kvm_run *run)
+{
+       int plane = plane_from_target(run->plane_event.target);
+       if (plane < 0) {
+               return plane;
+       }
+
+       run->plane = plane;
+       cpu->kvm_plane = plane;
+
+       return 0;
+}
+
 static int kvm_handle_plane_event(CPUState *cpu, struct kvm_run *run)
 {
     switch (run->plane_event.cause) {
         case KVM_PLANE_EVENT_CREATE_CPU:
             return kvm_handle_plane_create_vcpu(cpu, run);
+        case KVM_PLANE_EVENT_RUN_SNP_VMPL:
+            return kvm_handle_snp_run_vmpl(cpu, run);
         default:
             fprintf(stderr, "KVM: unknown plane event %d\n", run->plane_event.cause);
             break;

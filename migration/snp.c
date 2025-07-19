@@ -90,6 +90,7 @@ static void
         }
         header = qemu_get_be64(f);
     }
+    write_status_register(SNP_MIGRATION_STATUS_COMPLETED);// FIXME: only for debugging purposes, should be deleted in future.
     qemu_fclose(f);
     for(int i = 0; i < s->channels_len; i++) {
         object_unref(OBJECT(s->channels[i]));

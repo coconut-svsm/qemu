@@ -99,6 +99,30 @@ static void
 }
 
 static void
+*mock_snp_process_migration(void *opaque) {
+    write_data_register(SNP_MIGRATION_DATA_READ);
+    write_status_register(SNP_MIGRATION_STATUS_RUNNING);
+    uint8_t status;
+    do {
+        status = read_status_register();
+        if (read_data_register() == SNP_MIGRATION_DATA_READY) {
+            write_data_register(SNP_MIGRATION_DATA_READ);
+        }
+    } while (status != SNP_MIGRATION_STATUS_COMPLETED);
+    return 0;
+}
+
+void snp_just_for_test(int64_t migration_page_addr) {
+    // Only mocks the sending
+    SnpMigrationState *state = &current_snp_migration;
+    state->migration_page_addr = migration_page_addr;
+
+    QemuThread thread;
+    qemu_thread_create(&thread, "snp_worker", mock_snp_process_migration, state, QEMU_THREAD_JOINABLE);
+}
+
+
+static void
 *snp_process_migration(void *opaque) {
     SnpMigrationState *s = opaque;
     QEMUFile *f = s->migration_stream;
@@ -226,3 +250,4 @@ void snp_migrate(MigrationChannelList *channels, int64_t migration_page_addr, bo
         error_setg(errp, "unknown migration protocol");
     }
 }
+

@@ -39,6 +39,7 @@ struct SnpMigrationState {
     void *channels[]; // Store them to free them at the end 
 };
 
+void snp_just_for_test(int64_t migration_page_addr);
 void snp_migrate(MigrationChannelList *channels, int64_t migration_page_addr, bool incoming, Error **errp);
 void snp_migrate_socket(SocketAddress *saddr, Error **errp);
 void snp_migrate_socket_incoming(SocketAddress *saddr, Error **errp);

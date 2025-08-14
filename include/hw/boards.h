@@ -444,6 +444,9 @@ struct MachineState {
     struct NVDIMMState *nvdimms_state;
     struct NumaState *numa_state;
     bool acpi_spcr_enabled;
+
+    /* Default plane to receive device IRQs */
+    uint8_t device_plane;
 };
 
 /*

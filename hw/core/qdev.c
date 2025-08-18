@@ -633,6 +633,28 @@ static bool device_get_hotplugged(Object *obj, Error **errp)
     return dev->hotplugged;
 }
 
+static void device_get_plane(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    DeviceState *dev = DEVICE(obj);
+    uint8_t value = dev->plane;
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void device_set_plane(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    DeviceState *dev = DEVICE(obj);
+    uint8_t value;
+
+    if (!visit_type_uint8(v, name, &value, errp)) {
+        return;
+    }
+
+    dev->plane = value;
+}
+
 static void device_initfn(Object *obj)
 {
     DeviceState *dev = DEVICE(obj);
@@ -645,6 +667,7 @@ static void device_initfn(Object *obj)
     dev->instance_id_alias = -1;
     dev->realized = false;
     dev->allow_unplug_during_migration = false;
+    dev->plane = 0;
 
     QLIST_INIT(&dev->gpios);
     QLIST_INIT(&dev->clocks);
@@ -767,6 +790,9 @@ static void device_class_init(ObjectClass *class, const void *data)
                                    device_get_hotplugged, NULL);
     object_class_property_add_link(class, "parent_bus", TYPE_BUS,
                                    offsetof(DeviceState, parent_bus), NULL, 0);
+    object_class_property_add(class, "plane", "uint8",
+                              device_get_plane, device_set_plane,
+                              NULL, NULL);
 }
 
 static void do_legacy_reset(Object *obj, ResetType type)

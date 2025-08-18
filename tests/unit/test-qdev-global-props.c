@@ -71,6 +71,11 @@ static const TypeInfo subclass_type = {
     .parent = TYPE_STATIC_PROPS,
 };
 
+uint8_t qdev_default_plane(void)
+{
+    return 0;
+}
+
 /*
  * Initialize a fake machine, being prepared for future tests.
  *

@@ -299,6 +299,10 @@ struct DeviceState {
      * Used to prevent re-entrancy confusing things.
      */
     MemReentrancyGuard mem_reentrancy_guard;
+    /**
+     * @plane: Plane the device is assigned to.
+     */
+    uint8_t plane;
 };
 
 typedef struct DeviceListener DeviceListener;

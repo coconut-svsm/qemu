@@ -75,6 +75,19 @@ void accel_pre_resume(MachineState *ms, bool step_pending)
     }
 }
 
+uint8_t accel_nr_planes(MachineState *ms)
+{
+    AccelState *accel = ms->accelerator;
+    AccelClass *acc = ACCEL_GET_CLASS(accel);
+    uint8_t nr_planes = 1;
+
+    if (acc->nr_planes != NULL) {
+        nr_planes = acc->nr_planes(accel, ms);
+    }
+
+    return nr_planes;
+}
+
 /* initialize the arch-independent accel operation interfaces */
 void accel_init_ops_interfaces(AccelClass *ac)
 {

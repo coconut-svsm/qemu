@@ -37,10 +37,13 @@
 static MSIMessage msix_prepare_message(PCIDevice *dev, unsigned vector)
 {
     uint8_t *table_entry = dev->msix_table + vector * PCI_MSIX_ENTRY_SIZE;
+    DeviceState *dev_state= DEVICE(dev);
     MSIMessage msg;
 
     msg.address = pci_get_quad(table_entry + PCI_MSIX_ENTRY_LOWER_ADDR);
     msg.data = pci_get_long(table_entry + PCI_MSIX_ENTRY_DATA);
+    msg.plane_id = dev_state->plane;
+
     return msg;
 }
 

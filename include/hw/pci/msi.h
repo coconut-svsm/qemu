@@ -26,6 +26,7 @@
 struct MSIMessage {
     uint64_t address;
     uint32_t data;
+    uint8_t plane_id;
 };
 
 extern bool msi_nonbroken;

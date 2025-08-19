@@ -6141,7 +6141,7 @@ static int kvm_handle_plane_event(CPUState *cpu, struct kvm_run *run)
     switch (run->plane_event.cause) {
         case KVM_PLANE_EVENT_CREATE_CPU:
             return kvm_handle_plane_create_vcpu(cpu, run);
-        case KVM_PLANE_EVENT_RUN_SNP_VMPL:
+        case KVM_PLANE_EVENT_SWITCH:
             return kvm_handle_snp_run_vmpl(cpu, run);
         default:
             fprintf(stderr, "KVM: unknown plane event %d\n", run->plane_event.cause);

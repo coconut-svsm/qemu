@@ -2236,7 +2236,7 @@ int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg)
     msi.flags = 0;
     memset(msi.pad, 0, sizeof(msi.pad));
 
-    return kvm_vm_ioctl(s, KVM_SIGNAL_MSI, &msi);
+    return kvm_vm_plane_ioctl(s, msg.plane_id, KVM_SIGNAL_MSI, &msi);
 }
 
 int kvm_irqchip_add_msi_route(KVMRouteChange *c, int vector, PCIDevice *dev)

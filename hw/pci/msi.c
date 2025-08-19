@@ -142,6 +142,7 @@ static MSIMessage msi_prepare_message(PCIDevice *dev, unsigned int vector)
     uint16_t flags = pci_get_word(dev->config + msi_flags_off(dev));
     bool msi64bit = flags & PCI_MSI_FLAGS_64BIT;
     unsigned int nr_vectors = msi_nr_vectors(flags);
+    DeviceState *dev_state= DEVICE(dev);
     MSIMessage msg;
 
     assert(vector < nr_vectors);
@@ -158,6 +159,8 @@ static MSIMessage msi_prepare_message(PCIDevice *dev, unsigned int vector)
         msg.data &= ~(nr_vectors - 1);
         msg.data |= vector;
     }
+
+    msg.plane_id =  dev_state->plane;
 
     return msg;
 }

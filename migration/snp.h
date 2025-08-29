@@ -20,6 +20,7 @@
 
 #define SNP_MIGRATION_DATA_READY 0x4
 #define SNP_MIGRATION_DATA_READ 0x5
+#define SNP_MIGRATION_DATA_ADDRESS 0x6
 
 // Used in communication with the other QEMU
 #define SNP_MIGRATION_FLAG_DATA 0x5
@@ -27,6 +28,7 @@
 
 #define STATUS_REGISTER_OFFSET 0x0
 #define DATA_REGISTER_OFFSET 0x1
+#define ADDRESS_REGISTER_OFFSET 0x2
 #define DATA_BUFFER_OFFSET 0x800
 #define DATA_BUFFER_SIZE 0x800
 
@@ -39,9 +41,12 @@ struct SnpMigrationState {
     void *channels[]; // Store them to free them at the end 
 };
 
-void snp_just_for_test(int64_t migration_page_addr);
-void snp_migrate(MigrationChannelList *channels, int64_t migration_page_addr, bool incoming, Error **errp);
-void snp_migrate_socket(SocketAddress *saddr, Error **errp);
-void snp_migrate_socket_incoming(SocketAddress *saddr, Error **errp);
+uint8_t* snp_package_page(ram_addr_t guest_physical_addr);
+void start_migration_handler(void);
+
+//void snp_just_for_test(int64_t migration_page_addr);
+// void snp_migrate(MigrationChannelList *channels, int64_t migration_page_addr, bool incoming, Error **errp);
+// void snp_migrate_socket(SocketAddress *saddr, Error **errp);
+// void snp_migrate_socket_incoming(SocketAddress *saddr, Error **errp);
 
 #endif

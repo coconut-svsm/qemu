@@ -298,6 +298,7 @@ static inline bool multifd_queue_full(MultiFDPages_t *pages)
 
 static inline void multifd_enqueue(MultiFDPages_t *pages, ram_addr_t offset)
 {
+    qemu_log("KUBA: multifd enqueue");
     pages->offset[pages->num++] = offset;
 }
 

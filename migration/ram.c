@@ -63,6 +63,8 @@
 #include "sysemu/kvm.h"
 
 #include "hw/boards.h" /* for machine_dump_guest_core() */
+#include "exec/confidential-guest-support.h"
+#include "migration/snp.h"
 
 #if defined(__linux__)
 #include "qemu/userfaultfd.h"
@@ -1208,20 +1210,32 @@ static bool control_save_page(PageSearchStatus *pss,
 static int save_normal_page(PageSearchStatus *pss, RAMBlock *block,
                             ram_addr_t offset, uint8_t *buf, bool async)
 {
+    //qemu_log("KUBA: save_normal_page: %s : offset %lx \n", block->idstr, offset);
     QEMUFile *file = pss->pss_channel;
 
     if (migrate_mapped_ram()) {
+        //qemu_log("KUBA: migrate_mapped_ram\n");
         qemu_put_buffer_at(file, buf, TARGET_PAGE_SIZE,
                            block->pages_offset + offset);
         set_bit(offset >> TARGET_PAGE_BITS, block->file_bmap);
     } else {
+        //qemu_log("KUBA: ram_transferred_add\n");
         ram_transferred_add(save_page_header(pss, pss->pss_channel, block,
                                              offset | RAM_SAVE_FLAG_PAGE));
         if (async) {
+            //qemu_log("KUBA: ram_transferred_add: async: page_size: %d \n", TARGET_PAGE_SIZE);
+            /*
+            qemu_log("Page contents: ");
+            for (size_t i = 0; i < TARGET_PAGE_SIZE; i++) {
+                qemu_log("%02x ", buf[i]);
+            }
+            qemu_log("\n");
+            */
             qemu_put_buffer_async(file, buf, TARGET_PAGE_SIZE,
                                   migrate_release_ram() &&
                                   migration_in_postcopy());
         } else {
+            //qemu_log("KUBA: ram_transferred_add: else\n");
             qemu_put_buffer(file, buf, TARGET_PAGE_SIZE);
         }
     }
@@ -1251,11 +1265,28 @@ static int ram_save_page(RAMState *rs, PageSearchStatus *pss)
     ram_addr_t offset = ((ram_addr_t)pss->page) << TARGET_PAGE_BITS;
     ram_addr_t current_addr = block->offset + offset;
 
+    uint8_t buf[TARGET_PAGE_SIZE] = {0};
+    /*
     p = block->host + offset;
+    qemu_log("KUBA: original p: %p\n", p);
+
+    p = (uint8_t *)0x8000f1c000;
+    */
+    snp_package_page(current_addr);
+    cpu_physical_memory_read(0x8000f1c000, buf, TARGET_PAGE_SIZE);
+    p = buf;
+
+    qemu_log("Page contents: ");
+    for (size_t i = 0; i < 10; i++) {
+        qemu_log("%02x ", buf[i]);
+    }
+    qemu_log("\n");
+
     trace_ram_save_page(block->idstr, (uint64_t)offset, p);
 
     XBZRLE_cache_lock();
     if (rs->xbzrle_started && !migration_in_postcopy()) {
+        //qemu_log("KUBA: save xbzrle\n");
         pages = save_xbzrle_page(rs, pss, &p, current_addr,
                                  block, offset);
         if (!rs->last_stage) {
@@ -1268,6 +1299,7 @@ static int ram_save_page(RAMState *rs, PageSearchStatus *pss)
 
     /* XBZRLE overflow or normal page */
     if (pages == -1) {
+        //qemu_log("KUBA: overflow or normal page\n");
         pages = save_normal_page(pss, block, offset, p, send_async);
     }
 
@@ -2020,6 +2052,7 @@ static int ram_save_target_page_legacy(RAMState *rs, PageSearchStatus *pss)
  */
 static int ram_save_target_page_multifd(RAMState *rs, PageSearchStatus *pss)
 {
+    //qemu_log("KUBA: ram_save_target_page_multifd");
     RAMBlock *block = pss->block;
     ram_addr_t offset = ((ram_addr_t)pss->page) << TARGET_PAGE_BITS;
 
@@ -2984,6 +3017,23 @@ static bool mapped_ram_read_header(QEMUFile *file, MappedRamHeader *header,
     return true;
 }
 
+/* Helper function to encapsulate the functionality. The implementation is just
+ * to show the integration without breaking the existing functionality 
+ */
+static bool is_machine_confidential(void)
+{
+    //MachineState *ms = MACHINE(qdev_get_machine());
+    //MachineClass *mc = MACHINE_GET_CLASS(ms);
+    //qemu_log("KUBA MachineClass: %s\n", mc->name);
+
+    ConfidentialGuestSupport *cgs = MACHINE(qdev_get_machine())->cgs;
+    if (cgs != NULL && cgs->ready) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 /*
  * Each of ram_save_setup, ram_save_iterate and ram_save_complete has
  * long-running RCU critical section.  When rcu-reclaims in the code
@@ -3057,6 +3107,13 @@ static int ram_save_setup(QEMUFile *f, void *opaque, Error **errp)
     }
 
     migration_ops = g_malloc0(sizeof(MigrationOps));
+
+    if (is_machine_confidential()) {
+        //int64_t migration_page_addr = 0x8000f1c000;
+        start_migration_handler();
+    }
+    //qemu_log("KUBA: Confidential Ready %b\n", current_machine->cgs->ready);
+    // If machine is confidential start the migration handler
 
     if (migrate_multifd()) {
         multifd_ram_save_setup();
@@ -3336,6 +3393,8 @@ static void ram_state_pending_exact(void *opaque, uint64_t *must_precopy,
         }
         bql_unlock();
     }
+
+    //qemu_log("KUBA: migration_dirty_pages: %lu\n", rs->migration_dirty_pages);
 
     remaining_size = rs->migration_dirty_pages * TARGET_PAGE_SIZE;
 
@@ -4462,6 +4521,88 @@ static int ram_resume_prepare(MigrationState *s, void *opaque)
     return 0;
 }
 
+static void clear_all_dirty_pages(RAMBlock *block)
+{
+    uint64_t pages;
+
+    /* You must hold the iothread lock or be in a safe BH here */
+
+    /* 1) clear the per-block guest-page bitmap */
+    pages = block->used_length >> TARGET_PAGE_BITS;
+    bitmap_clear(block->bmap, 0, pages);
+}
+
+static void dump_dirty_pages(RAMBlock *block) {
+    unsigned long *bitmap = block->bmap;
+    uint64_t total_pages = block->used_length >> TARGET_PAGE_BITS;
+    unsigned long idx = 0;
+
+    uint64_t dirty_count = 0;
+    while (idx < total_pages) {
+        unsigned long next = find_next_bit(bitmap, total_pages, idx);
+        if (next >= total_pages) {
+            break;
+        }
+        dirty_count += 1;
+        //qemu_log("Block %s: page %lu is dirty\n", block->idstr, next);
+        idx = next + 1;
+    }
+    qemu_log("Block %s: dirty pages: %lu, pages: %lu", block->idstr, dirty_count, total_pages);
+}
+
+
+static void print_int128_as_hex(__int128 num) {
+    // Create an array to hold the hexadecimal representation
+    char buffer[33]; // 32 hex digits + 1 for null terminator
+    buffer[32] = '\0'; // Null-terminate the string
+
+    // Fill the buffer with hexadecimal digits
+    for (int i = 31; i >= 0; i--) {
+        buffer[i] = "0123456789abcdef"[num & 0xF]; // Get the last hex digit
+        num >>= 4; // Shift right by 4 bits
+    }
+
+    qemu_log("The __int128 number in hexadecimal is: %s\n", buffer);
+}
+
+void print_ram_blocks(void) {
+    Error *errp = NULL;
+    memory_global_dirty_log_start(GLOBAL_DIRTY_MIGRATION, &errp);
+    
+    RAMBlock *block;
+
+    QLIST_FOREACH(block, &ram_list.blocks, next) {
+        if (!strcmp(block->idstr, "mem0")) {
+            if (block->bmap == NULL) {
+                printf("Initializing\n");
+                WITH_RCU_READ_LOCK_GUARD() {
+                    ram_list_init_bitmaps();
+                    clear_all_dirty_pages(block);
+                }
+            }
+            printf("Printing\n");
+
+            qemu_log("Block name: %s\n", block->idstr);
+            qemu_log("MemoryRegion name: %s\n", block->mr->name);
+            qemu_log("IS RAM: %b\n", block->mr->ram);
+
+            qemu_log("Bitmap: %p\n", block->bmap);
+            print_int128_as_hex(block->mr->size);
+            qemu_log("Offset: 0x%" PRIx64 "\n", block->offset);
+            qemu_log("Flags: 0x%x\n", block->flags);
+#ifdef CONFIG_LINUX
+            qemu_log("guest_memfd: %d\n", block->guest_memfd);
+#else
+            qemu_log("guest_memfd: N/A\n");
+#endif
+            dump_dirty_pages(block);
+            qemu_log("---------\n");
+        }
+    }
+    qemu_log("---------\n");
+    qemu_log("---------\n");
+}
+
 void postcopy_preempt_shutdown_file(MigrationState *s)
 {
     qemu_put_be64(s->postcopy_qemufile_src, RAM_SAVE_FLAG_EOS);
@@ -4490,6 +4631,7 @@ static void ram_mig_ram_block_resized(RAMBlockNotifier *n, void *host,
     ram_addr_t offset;
     RAMBlock *rb = qemu_ram_block_from_host(host, false, &offset);
     Error *err = NULL;
+
 
     if (!rb) {
         error_report("RAM block not found");
@@ -4553,3 +4695,4 @@ void ram_mig_init(void)
     register_savevm_live("ram", 0, 4, &savevm_ram_handlers, &ram_state);
     ram_block_notifier_add(&ram_mig_ram_notifier);
 }
+

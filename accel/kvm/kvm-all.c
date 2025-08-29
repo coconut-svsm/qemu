@@ -1880,6 +1880,14 @@ static MemoryListener kvm_io_listener = {
     .priority = MEMORY_LISTENER_PRIORITY_DEV_BACKEND,
 };
 
+void kvm_raise_nmi(void)
+{
+    KVMState *s = KVM_STATE(current_accel());
+
+    kvm_set_irq(s, 29, 1);
+    kvm_set_irq(s, 29, 0);
+}
+
 int kvm_set_irq(KVMState *s, int irq, int level)
 {
     struct kvm_irq_level event;
@@ -4301,6 +4309,7 @@ void kvm_mark_guest_state_protected(void)
 
 int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
 {
+    qemu_log("KUBA: kvm_create_guest_memfd: size %lx, flags %lx \n", size, flags);
     int fd;
     struct kvm_create_guest_memfd guest_memfd = {
         .size = size,

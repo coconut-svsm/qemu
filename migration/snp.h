@@ -41,8 +41,10 @@ struct SnpMigrationState {
     void *channels[]; // Store them to free them at the end 
 };
 
-uint8_t* snp_package_page(ram_addr_t guest_physical_addr);
+bool all_vcpus_running(void);
 void start_migration_handler(void);
+void stop_migration_handler(void);
+uint8_t* snp_package_page(ram_addr_t guest_physical_addr);
 
 //void snp_just_for_test(int64_t migration_page_addr);
 // void snp_migrate(MigrationChannelList *channels, int64_t migration_page_addr, bool incoming, Error **errp);

@@ -78,29 +78,57 @@ static void write_address_register(ram_addr_t guest_physical_addr) {
 
 }  
 
+
+bool all_vcpus_running(void)
+{
+    CPUState *cpu;
+    CPU_FOREACH(cpu) {
+        /* cpu is a pointer to each CPUState in turn */
+        /* example: print CPU index and halted state */
+        int idx = cpu->cpu_index;
+        bool stopped = cpu->stopped;
+        //printf("CPU %d: halted=%d\n", idx, halted);
+        if (stopped) {
+            qemu_log("CPU stopped %d\n", idx);
+            if (idx == 3) {
+                qemu_log("CPU resumed %d\n", idx);
+                cpu_resume(cpu);
+            }
+        }
+        if (stopped) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void start_migration_handler(void) {
     write_data_register(SNP_MIGRATION_DATA_READ);
     write_status_register(SNP_MIGRATION_STATUS_RUNNING);
 }
 
-uint8_t* snp_package_page(ram_addr_t guest_physical_addr) {
-    // Set the migration status to running (should be somewhere else to be done
-    // only once for all)
-    //write_status_register(SNP_MIGRATION_STATUS_RUNNING);
+void stop_migration_handler(void) {
+     write_status_register(SNP_MIGRATION_STATUS_COMPLETED);
+}
 
+uint8_t* snp_package_page(ram_addr_t guest_physical_addr) {
     // Send address to the guest
     write_address_register(guest_physical_addr);
     write_data_register(SNP_MIGRATION_DATA_ADDRESS);
-    qemu_log("KUBA: Address Written %lx\n", guest_physical_addr);
+    //qemu_log("KUBA: Address Written %lx\n", guest_physical_addr);
 
     // Wait for data to be ready
     uint64_t value = 0x0;
     do {
         value = read_data_register();
-        //qemu_log("KUBA: Waiting for data %lx \n", value);
+        bool running = all_vcpus_running();
+        //qemu_log("KUBA: snp: running: %b \n", running);
+        if (!running) {
+            return 0;
+        }
     } while (value != SNP_MIGRATION_DATA_READY);
     // TODO: Process data
-    qemu_log("KUBA: Package Data\n");
+    //qemu_log("KUBA: Package Data\n");
 
     // Read the data and send back the address of the buffer
     // Currently the address is hardcoded.

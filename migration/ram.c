@@ -211,6 +211,23 @@ out:
     return ret;
 }
 
+/* Helper function to encapsulate the functionality. The implementation is just
+ * to show the integration without breaking the existing functionality 
+ */
+static bool is_machine_confidential(void)
+{
+    //MachineState *ms = MACHINE(qdev_get_machine());
+    //MachineClass *mc = MACHINE_GET_CLASS(ms);
+    //qemu_log("KUBA MachineClass: %s\n", mc->name);
+
+    ConfidentialGuestSupport *cgs = MACHINE(qdev_get_machine())->cgs;
+    if (cgs != NULL && cgs->ready) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
 static bool postcopy_preempt_active(void)
 {
     return migrate_postcopy_preempt() && migration_in_postcopy();
@@ -1265,22 +1282,14 @@ static int ram_save_page(RAMState *rs, PageSearchStatus *pss)
     ram_addr_t offset = ((ram_addr_t)pss->page) << TARGET_PAGE_BITS;
     ram_addr_t current_addr = block->offset + offset;
 
-    uint8_t buf[TARGET_PAGE_SIZE] = {0};
-    /*
-    p = block->host + offset;
-    qemu_log("KUBA: original p: %p\n", p);
-
-    p = (uint8_t *)0x8000f1c000;
-    */
-    snp_package_page(current_addr);
-    cpu_physical_memory_read(0x8000f1c000, buf, TARGET_PAGE_SIZE);
-    p = buf;
-
-    qemu_log("Page contents: ");
-    for (size_t i = 0; i < 10; i++) {
-        qemu_log("%02x ", buf[i]);
+    if (is_machine_confidential()) {
+        uint8_t buf[TARGET_PAGE_SIZE] = {0};
+        snp_package_page(current_addr);
+        cpu_physical_memory_read(0x8000f1c000, buf, TARGET_PAGE_SIZE);
+        p = buf;
+    } else {
+        p = block->host + offset;
     }
-    qemu_log("\n");
 
     trace_ram_save_page(block->idstr, (uint64_t)offset, p);
 
@@ -2400,6 +2409,7 @@ static void ram_bitmaps_destroy(void)
 
 static void ram_save_cleanup(void *opaque)
 {
+    stop_migration_handler();
     RAMState **rsp = opaque;
 
     /* We don't use dirty log with background snapshots */
@@ -3017,22 +3027,6 @@ static bool mapped_ram_read_header(QEMUFile *file, MappedRamHeader *header,
     return true;
 }
 
-/* Helper function to encapsulate the functionality. The implementation is just
- * to show the integration without breaking the existing functionality 
- */
-static bool is_machine_confidential(void)
-{
-    //MachineState *ms = MACHINE(qdev_get_machine());
-    //MachineClass *mc = MACHINE_GET_CLASS(ms);
-    //qemu_log("KUBA MachineClass: %s\n", mc->name);
-
-    ConfidentialGuestSupport *cgs = MACHINE(qdev_get_machine())->cgs;
-    if (cgs != NULL && cgs->ready) {
-        return true;
-    } else {
-        return false;
-    }
-}
 
 /*
  * Each of ram_save_setup, ram_save_iterate and ram_save_complete has

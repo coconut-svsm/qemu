@@ -141,6 +141,7 @@ static QemuMutex kml_slots_lock;
 #define kvm_slots_unlock()  qemu_mutex_unlock(&kml_slots_lock)
 
 static void kvm_slot_init_dirty_bitmap(KVMSlot *mem);
+static int kvm_create_plane(KVMState *s, unsigned id);
 
 static inline void kvm_resample_fd_remove(int gsi)
 {
@@ -2172,6 +2173,7 @@ void kvm_irqchip_add_irq_route(KVMState *s, int irq, int irqchip, int pin)
     e.gsi = irq;
     e.type = KVM_IRQ_ROUTING_IRQCHIP;
     e.flags = 0;
+    e.plane = qdev_default_plane();
     e.u.irqchip.irqchip = irqchip;
     e.u.irqchip.pin = pin;
     kvm_add_routing_entry(s, &e);
@@ -2266,6 +2268,7 @@ int kvm_irqchip_add_msi_route(KVMRouteChange *c, int vector, PCIDevice *dev)
     kroute.gsi = virq;
     kroute.type = KVM_IRQ_ROUTING_MSI;
     kroute.flags = 0;
+    kroute.plane = qdev_default_plane();
     kroute.u.msi.address_lo = (uint32_t)msg.address;
     kroute.u.msi.address_hi = msg.address >> 32;
     kroute.u.msi.data = le32_to_cpu(msg.data);
@@ -2309,6 +2312,7 @@ int kvm_irqchip_update_msi_route(KVMState *s, int virq, MSIMessage msg,
     kroute.gsi = virq;
     kroute.type = KVM_IRQ_ROUTING_MSI;
     kroute.flags = 0;
+    kroute.plane = qdev_default_plane();
     kroute.u.msi.address_lo = (uint32_t)msg.address;
     kroute.u.msi.address_hi = msg.address >> 32;
     kroute.u.msi.data = le32_to_cpu(msg.data);
@@ -2457,6 +2461,7 @@ void kvm_irqchip_set_qemuirq_gsi(KVMState *s, qemu_irq irq, int gsi)
 
 static void kvm_irqchip_create(KVMState *s)
 {
+    int device_plane = qdev_default_plane();
     int ret;
 
     assert(s->kernel_irqchip_split != ON_OFF_AUTO_AUTO);
@@ -2499,6 +2504,11 @@ static void kvm_irqchip_create(KVMState *s)
      */
     kvm_async_interrupts_allowed = true;
     kvm_halt_in_kernel_allowed = true;
+
+    /* Create the device plane to IRQs can be routed to it. */
+    if (device_plane != 0) {
+        kvm_create_plane(s, device_plane);
+    }
 
     kvm_init_irq_routing(s);
 

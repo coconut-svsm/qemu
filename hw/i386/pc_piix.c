@@ -376,13 +376,19 @@ static void pc_init1(MachineState *machine, const char *pci_type)
     }
 
 #if defined(CONFIG_IGVM)
-    /* Apply guest state from IGVM if supplied */
-    if (x86ms->igvm) {
+    MachineState *ms = MACHINE(x86ms);
+
+    GArray *madt = acpi_build_madt_standalone(ms);
+
+    /* Apply guest state from IGVM if supplied and provide MADT to the
+     * guest via IGVM parameter.*/
+    if (x86ms->igvm && madt->len > 0) {
         if (IGVM_CFG_GET_CLASS(x86ms->igvm)
-                ->process(x86ms->igvm, machine->cgs, false, &error_fatal) < 0) {
+                ->process(x86ms->igvm, ms->cgs, madt, false, &error_fatal) < 0) {
             g_assert_not_reached();
         }
     }
+    g_array_free(madt, true);
 #endif
 }
 

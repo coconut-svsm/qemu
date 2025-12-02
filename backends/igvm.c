@@ -90,6 +90,8 @@ typedef struct QIgvm {
     unsigned region_start_index;
     unsigned region_last_index;
     unsigned region_page_count;
+    bool only_vp_context;
+    GArray *madt;
 } QIgvm;
 
 static int qigvm_directive_page_data(QIgvm *ctx, const uint8_t *header_data,
@@ -117,6 +119,8 @@ static int qigvm_directive_snp_id_block(QIgvm *ctx, const uint8_t *header_data,
 static int qigvm_initialization_guest_policy(QIgvm *ctx,
                                        const uint8_t *header_data,
                                        Error **errp);
+static int qigvm_initialization_madt(QIgvm *ctx,
+                                     const uint8_t *header_data, Error **errp);
 
 struct QIGVMHandler {
     uint32_t type;
@@ -145,6 +149,8 @@ static struct QIGVMHandler handlers[] = {
       qigvm_directive_snp_id_block },
     { IGVM_VHT_GUEST_POLICY, IGVM_HEADER_SECTION_INITIALIZATION,
       qigvm_initialization_guest_policy },
+    { IGVM_VHT_MADT, IGVM_HEADER_SECTION_DIRECTIVE,
+      qigvm_initialization_madt },
 };
 
 static int qigvm_handler(QIgvm *ctx, uint32_t type, Error **errp)
@@ -425,6 +431,8 @@ static int qigvm_directive_vp_context(QIgvm *ctx, const uint8_t *header_data,
         (const IGVM_VHS_VP_CONTEXT *)header_data;
     IgvmHandle data_handle;
     uint8_t *data;
+    uint32_t data_size;
+    uint8_t *region;
     int result;
 
     if (!(vp_context->compatibility_mask & ctx->compatibility_mask)) {
@@ -443,19 +451,52 @@ static int qigvm_directive_vp_context(QIgvm *ctx, const uint8_t *header_data,
         return -1;
     }
 
-    data_handle = igvm_get_header_data(ctx->file, IGVM_HEADER_SECTION_DIRECTIVE,
-                                       ctx->current_header_index);
+    /* 
+     * Complete any other page processing first to ensure measurements
+     * are correct.
+     */
+    if (!ctx->only_vp_context) {
+        if (qigvm_process_mem_page(ctx, NULL, errp)) {
+            return -1;
+        }
+    }
+
+    data_handle = igvm_get_header_data(ctx->file,
+                                        IGVM_HEADER_SECTION_DIRECTIVE,
+                                        ctx->current_header_index);
     if (data_handle < 0) {
         error_setg(errp, "Invalid VP context in IGVM file. Error code: %X",
                    data_handle);
         return -1;
     }
 
+    data_size = igvm_get_buffer_size(ctx->file, data_handle);
     data = (uint8_t *)igvm_get_buffer(ctx->file, data_handle);
-    result = ctx->cgsc->set_guest_state(
-        vp_context->gpa, data, igvm_get_buffer_size(ctx->file, data_handle),
-        CGS_PAGE_TYPE_VMSA, vp_context->vp_index, errp);
-    igvm_free_buffer(ctx->file, data_handle);
+
+    if (ctx->only_vp_context) {
+        igvm_free_buffer(ctx->file, data_handle);
+        result = ctx->cgsc->set_guest_state(
+            vp_context->gpa, data, data_size,
+            CGS_PAGE_TYPE_VMSA, vp_context->vp_index, errp);
+    } else {
+        region = qigvm_prepare_memory(ctx, vp_context->gpa, IGVM_PAGE_SIZE_4K,
+                                 ctx->current_header_index, errp);
+
+        if (!region) {
+            igvm_free_buffer(ctx->file, data_handle);
+            return -1;
+        }
+
+        memset(region, 0, IGVM_PAGE_SIZE_4K);
+
+        memcpy(region, data, data_size);
+        igvm_free_buffer(ctx->file, data_handle);
+
+        result = ctx->cgsc->set_guest_state(
+            vp_context->gpa, region, IGVM_PAGE_SIZE_4K,
+            CGS_PAGE_TYPE_VMSA, vp_context->vp_index, errp);
+    }
+
     if (result < 0) {
         return result;
     }
@@ -754,6 +795,34 @@ static int qigvm_initialization_guest_policy(QIgvm *ctx,
     return 0;
 }
 
+static int qigvm_initialization_madt(QIgvm *ctx,
+                                     const uint8_t *header_data, Error **errp)
+{
+    const IGVM_VHS_PARAMETER *param = (const IGVM_VHS_PARAMETER *)header_data;
+    QIgvmParameterData *param_entry;
+
+    if (ctx->madt == NULL) {
+        return 0;
+    }
+
+    /* Find the parameter area that should hold the device tree */
+    QTAILQ_FOREACH(param_entry, &ctx->parameter_data, next)
+    {
+        if (param_entry->index == param->parameter_area_index) {
+
+            if (ctx->madt->len > param_entry->size) {
+                error_setg(
+                    errp,
+                    "IGVM: MADT size exceeds parameter area defined in IGVM file");
+                return -1;
+            }
+            memcpy(param_entry->data, ctx->madt->data, ctx->madt->len);
+            break;
+        }
+    }
+    return 0;
+}
+
 static int qigvm_supported_platform_compat_mask(QIgvm *ctx, Error **errp)
 {
     int32_t header_count;
@@ -879,7 +948,7 @@ static IgvmHandle qigvm_file_init(char *filename, Error **errp)
     return igvm;
 }
 
-int qigvm_process_file(IgvmCfg *cfg, ConfidentialGuestSupport *cgs,
+int qigvm_process_file(IgvmCfg *cfg, ConfidentialGuestSupport *cgs, GArray *madt,
                        bool onlyVpContext, Error **errp)
 {
     int32_t header_count;
@@ -888,6 +957,7 @@ int qigvm_process_file(IgvmCfg *cfg, ConfidentialGuestSupport *cgs,
     QIgvm ctx;
 
     memset(&ctx, 0, sizeof(ctx));
+    ctx.only_vp_context = onlyVpContext;
     ctx.file = qigvm_file_init(cfg->filename, errp);
     if (ctx.file < 0) {
         return -1;
@@ -900,6 +970,8 @@ int qigvm_process_file(IgvmCfg *cfg, ConfidentialGuestSupport *cgs,
      */
     ctx.cgs = cgs;
     ctx.cgsc = cgs ? CONFIDENTIAL_GUEST_SUPPORT_GET_CLASS(cgs) : NULL;
+
+    ctx.madt = madt;
 
     /*
      * Check that the IGVM file provides configuration for the current

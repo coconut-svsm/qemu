@@ -61,7 +61,9 @@
 #include "hw/mem/nvdimm.h"
 #include "hw/uefi/var-service-api.h"
 #include "hw/i386/acpi-build.h"
+#include "hw/uefi/hardware-info.h"
 #include "target/i386/cpu.h"
+#include "exec/target_page.h"
 
 /* ICH9 AHCI has 6 ports */
 #define MAX_SATA_PORTS     6
@@ -330,14 +332,33 @@ static void pc_q35_init(MachineState *machine)
     }
 
 #if defined(CONFIG_IGVM)
-    /* Apply guest state from IGVM if supplied */
-    if (x86ms->igvm) {
+    MachineState *ms = MACHINE(x86ms);
+
+    GArray *madt = acpi_build_madt_standalone(ms);
+
+    /* Apply guest state from IGVM if supplied and provide MADT to the
+     * guest via IGVM parameter.*/
+    if (x86ms->igvm && madt->len > 0) {
         if (IGVM_CFG_GET_CLASS(x86ms->igvm)
-                ->process(x86ms->igvm, machine->cgs, false, &error_fatal) < 0) {
+                ->process(x86ms->igvm, ms->cgs, madt, false, &error_fatal) < 0) {
             g_assert_not_reached();
         }
     }
+    g_array_free(madt, true);
 #endif
+
+    if (pcms->svsm_virtio_mmio) {
+        for (int dev = 0; dev < 4; dev++) {
+            HARDWARE_INFO_SIMPLE_DEVICE hwinfo = {
+                .mmio_address = cpu_to_le64(0xfef00000 + dev * TARGET_PAGE_SIZE),
+            };
+            sysbus_create_simple("virtio-mmio", hwinfo.mmio_address,
+                                 /* no irq */ NULL);
+            hardware_info_register(HardwareInfoVirtioMmioSvsm,
+                                   &hwinfo, sizeof(hwinfo));
+        }
+    }
+
 }
 
 #define DEFINE_Q35_MACHINE(major, minor) \

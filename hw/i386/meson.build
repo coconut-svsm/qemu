@@ -29,6 +29,7 @@ stub_ss.add(files('sgx-hmp-stub.c'))
 i386_ss.add(when: 'CONFIG_ACPI', if_true: files('acpi-common.c'))
 i386_ss.add(when: 'CONFIG_PC', if_true: files(
   'x86-common.c',
+  'x86_dt_common.c',
   'pc.c',
   'pc_sysfw.c',
   'acpi-build.c',

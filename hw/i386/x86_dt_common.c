@@ -21,6 +21,7 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "system/device_tree.h"
+#include "hw/char/serial-isa.h"
 #include "hw/core/sysbus.h"
 #include "hw/virtio/virtio-mmio.h"
 #include "qom/object.h"
@@ -60,11 +61,57 @@ static void dt_add_virtio(MachineState *ms, VirtIOMMIOProxy *mmio)
     g_free(nodename);
 }
 
+static void dt_add_isa_serial(MachineState *ms, ISADevice *dev)
+{
+    const char compat[] = "ns16550";
+    hwaddr base = object_property_get_int(OBJECT(dev), "iobase", &error_fatal);
+    uint8_t plane = object_property_get_int(OBJECT(dev), "plane", &error_fatal);
+
+    hwaddr size = 8;
+    char *nodename;
+
+    nodename = g_strdup_printf("/serial@%" PRIx64, base);
+    qemu_fdt_add_subnode(ms->fdt, nodename);
+    qemu_fdt_setprop(ms->fdt, nodename, "compatible", compat, sizeof(compat));
+    qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
+
+    g_free(nodename);
+}
+
+static void dt_setup_isa_bus(MachineState *ms, BusState *bus)
+{
+    BusChild *kid;
+    Object *obj;
+
+    QTAILQ_FOREACH(kid, &bus->children, sibling) {
+        DeviceState *dev = kid->child;
+
+        /* serial */
+        obj = object_dynamic_cast(OBJECT(dev), TYPE_ISA_SERIAL);
+        if (obj) {
+            dt_add_isa_serial(ms, ISA_DEVICE(obj));
+            continue;
+        }
+
+        if (debug) {
+            fprintf(stderr, "%s: unhandled: %s type: %s\n", __func__,
+                    dev->canonical_path,
+                    object_get_typename(OBJECT(dev)));
+        }
+    }
+}
+
 static void dt_setup_sys_bus(MachineState *ms)
 {
+    ISABus *isa_bus;
     BusState *bus;
     BusChild *kid;
     Object *obj;
+
+    /* PC Architecture always contains an ISA bus */
+    isa_bus = ISA_BUS(object_resolve_path_type("", TYPE_ISA_BUS, NULL));
+    dt_setup_isa_bus(ms, BUS(isa_bus));
 
     bus = sysbus_get_default();
 

@@ -73,6 +73,8 @@ static void dt_add_virtio(MicrovmMachineState *mms, VirtIOMMIOProxy *mmio)
         return;
     }
 
+    VirtIODevice *vdev = virtio_bus_get_device(mmio_virtio_bus);
+    uint8_t plane = object_property_get_int(OBJECT(vdev), "plane", &error_fatal);
     hwaddr base = dev->mmio[0].addr;
     hwaddr size = 512;
     unsigned index = (base - VIRTIO_MMIO_BASE) / size;
@@ -83,13 +85,15 @@ static void dt_add_virtio(MicrovmMachineState *mms, VirtIOMMIOProxy *mmio)
     qemu_fdt_setprop_string(ms->fdt, nodename, "compatible", "virtio,mmio");
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
     qemu_fdt_setprop(ms->fdt, nodename, "dma-coherent", NULL, 0);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
     dt_add_microvm_irq(mms, nodename, irq);
     g_free(nodename);
 }
 
-static void dt_add_xhci(MicrovmMachineState *mms)
+static void dt_add_xhci(MicrovmMachineState *mms, DeviceState *dev)
 {
     const char compat[] = "generic-xhci";
+    uint8_t plane = object_property_get_int(OBJECT(dev), "plane", &error_fatal);
     MachineState *ms = MACHINE(mms);
     uint32_t irq = MICROVM_XHCI_IRQ;
     hwaddr base = MICROVM_XHCI_BASE;
@@ -101,12 +105,14 @@ static void dt_add_xhci(MicrovmMachineState *mms)
     qemu_fdt_setprop(ms->fdt, nodename, "compatible", compat, sizeof(compat));
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
     qemu_fdt_setprop(ms->fdt, nodename, "dma-coherent", NULL, 0);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
     dt_add_microvm_irq(mms, nodename, irq);
     g_free(nodename);
 }
 
-static void dt_add_pcie(MicrovmMachineState *mms)
+static void dt_add_pcie(MicrovmMachineState *mms, DeviceState *dev)
 {
+    uint8_t plane = object_property_get_int(OBJECT(dev), "plane", &error_fatal);
     MachineState *ms = MACHINE(mms);
     hwaddr base = PCIE_MMIO_BASE;
     int nr_pcie_buses;
@@ -121,6 +127,7 @@ static void dt_add_pcie(MicrovmMachineState *mms)
     qemu_fdt_setprop_cell(ms->fdt, nodename, "#size-cells", 2);
     qemu_fdt_setprop_cell(ms->fdt, nodename, "linux,pci-domain", 0);
     qemu_fdt_setprop(ms->fdt, nodename, "dma-coherent", NULL, 0);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
 
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg",
                                  2, PCIE_ECAM_BASE, 2, PCIE_ECAM_SIZE);
@@ -154,6 +161,7 @@ static void dt_add_pcie(MicrovmMachineState *mms)
 
 static void dt_add_ioapic(MicrovmMachineState *mms, SysBusDevice *dev)
 {
+    uint8_t plane = object_property_get_int(OBJECT(dev), "plane", &error_fatal);
     MachineState *ms = MACHINE(mms);
     hwaddr base = dev->mmio[0].addr;
     char *nodename;
@@ -181,6 +189,7 @@ static void dt_add_ioapic(MicrovmMachineState *mms, SysBusDevice *dev)
     qemu_fdt_setprop_cell(ms->fdt, nodename, "#address-cells", 0x2);
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg",
                                  2, base, 2, 0x1000);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
 
     ph = qemu_fdt_alloc_phandle(ms->fdt);
     qemu_fdt_setprop_cell(ms->fdt, nodename, "phandle", ph);
@@ -195,6 +204,7 @@ static void dt_add_isa_serial(MicrovmMachineState *mms, ISADevice *dev)
     const char compat[] = "ns16550";
     uint32_t irq = object_property_get_int(OBJECT(dev), "irq", &error_fatal);
     hwaddr base = object_property_get_int(OBJECT(dev), "iobase", &error_fatal);
+    uint8_t plane = object_property_get_int(OBJECT(dev), "plane", &error_fatal);
     MachineState *ms = MACHINE(mms);
     hwaddr size = 8;
     char *nodename;
@@ -203,6 +213,7 @@ static void dt_add_isa_serial(MicrovmMachineState *mms, ISADevice *dev)
     qemu_fdt_add_subnode(ms->fdt, nodename);
     qemu_fdt_setprop(ms->fdt, nodename, "compatible", compat, sizeof(compat));
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
     dt_add_microvm_irq(mms, nodename, irq);
 
     if (base == 0x3f8 /* com1 */) {
@@ -217,6 +228,7 @@ static void dt_add_isa_rtc(MicrovmMachineState *mms, ISADevice *dev)
     const char compat[] = "motorola,mc146818";
     uint32_t irq = object_property_get_uint(OBJECT(dev), "irq", &error_fatal);
     hwaddr base = object_property_get_uint(OBJECT(dev), "iobase", &error_fatal);
+    uint8_t plane = object_property_get_int(OBJECT(dev), "plane", &error_fatal);
     MachineState *ms = MACHINE(mms);
     hwaddr size = 8;
     char *nodename;
@@ -225,6 +237,7 @@ static void dt_add_isa_rtc(MicrovmMachineState *mms, ISADevice *dev)
     qemu_fdt_add_subnode(ms->fdt, nodename);
     qemu_fdt_setprop(ms->fdt, nodename, "compatible", compat, sizeof(compat));
     qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "plane", plane);
     dt_add_microvm_irq(mms, nodename, irq);
     g_free(nodename);
 }
@@ -291,14 +304,14 @@ static void dt_setup_sys_bus(MicrovmMachineState *mms)
         /* xhci */
         obj = object_dynamic_cast(OBJECT(dev), TYPE_XHCI_SYSBUS);
         if (obj) {
-            dt_add_xhci(mms);
+            dt_add_xhci(mms, DEVICE(obj));
             continue;
         }
 
         /* pcie */
         obj = object_dynamic_cast(OBJECT(dev), TYPE_GPEX_HOST);
         if (obj) {
-            dt_add_pcie(mms);
+            dt_add_pcie(mms, DEVICE(obj));
             continue;
         }
 

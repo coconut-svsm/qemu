@@ -17,6 +17,8 @@ config TDX
 
 config PC
     bool
+    select DEVICE_TREE
+    depends on FDT
     imply APPLESMC
     imply HYPERV
     imply ISA_IPMI_KCS

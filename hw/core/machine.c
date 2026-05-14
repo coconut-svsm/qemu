@@ -1218,6 +1218,7 @@ static void machine_initfn(Object *obj)
     ms->kernel_cmdline = g_strdup("");
     ms->ram_size = mc->default_ram_size;
     ms->maxram_size = mc->default_ram_size;
+    ms->device_plane = 0;
 
     if (mc->nvdimm_supported) {
         ms->nvdimms_state = g_new0(NVDIMMState, 1);
@@ -1252,6 +1253,12 @@ static void machine_initfn(Object *obj)
                                    "Set on/off to enable/disable "
                                    "ACPI Serial Port Console Redirection "
                                    "Table (spcr)");
+
+    /* Default Device Plane */
+    object_property_add_uint8_ptr(obj, "device-plane", &ms->device_plane,
+                                  OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "device-plane",
+                                    "Default plane to receive device IRQs");
 
     /* default to mc->default_cpus */
     ms->smp.cpus = mc->default_cpus;
@@ -1759,6 +1766,15 @@ void qdev_machine_creation_done(void)
     replay_checkpoint(CHECKPOINT_RESET);
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
     register_global_state();
+}
+
+uint8_t qdev_default_plane(void)
+{
+    if (current_machine != NULL) {
+        return current_machine->device_plane;
+    } else {
+        return 0;
+    }
 }
 
 static const TypeInfo machine_info = {

@@ -295,6 +295,10 @@ struct DeviceState {
      * Used to prevent re-entrancy confusing things.
      */
     MemReentrancyGuard mem_reentrancy_guard;
+    /**
+     * @plane: Plane the device is assigned to.
+     */
+    uint8_t plane;
 };
 
 typedef struct DeviceListener DeviceListener;
@@ -560,6 +564,7 @@ void qdev_simple_device_unplug_cb(HotplugHandler *hotplug_dev,
                                   DeviceState *dev, Error **errp);
 void qdev_machine_creation_done(void);
 bool qdev_machine_modified(void);
+uint8_t qdev_default_plane(void);
 
 /**
  * qdev_add_unplug_blocker: Add an unplug blocker to a device

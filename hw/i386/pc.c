@@ -67,6 +67,7 @@
 #include "trace.h"
 #include "sev.h"
 #include CONFIG_DEVICES
+#include "x86_dt_common.h"
 
 #ifdef CONFIG_XEN_EMU
 #include "hw/xen/xen-legacy-backend.h"
@@ -522,6 +523,7 @@ void pc_machine_done(Notifier *notifier, void *data)
     PCMachineState *pcms = container_of(notifier,
                                         PCMachineState, machine_done);
     X86MachineState *x86ms = X86_MACHINE(pcms);
+    MachineState *machine = MACHINE(pcms);
 
     cxl_hook_up_pxb_registers(pcms->pcibus, &pcms->cxl_devices_state,
                               &error_fatal);
@@ -546,6 +548,9 @@ void pc_machine_done(Notifier *notifier, void *data)
     }
 
     pc_cmos_init_late(pcms);
+    if (x86ms->igvm) {
+        dt_setup_x86(machine);
+    }
 }
 
 /* setup pci memory address space mapping into system address space */

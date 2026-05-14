@@ -5,6 +5,11 @@
 #include "qapi/visitor.h"
 
 
+uint8_t qdev_default_plane(void)
+{
+    return 0;
+}
+
 #define TYPE_MY_DEV "my-dev"
 typedef struct MyDev MyDev;
 DECLARE_INSTANCE_CHECKER(MyDev, STATIC_TYPE,

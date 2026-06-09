@@ -109,8 +109,8 @@ static int qigvm_directive_device_tree(QIgvm *ctx, const uint8_t *header_data,
 #endif
 
 struct QIGVMHandler {
-    uint32_t type;
-    uint32_t section;
+    IgvmVariableHeaderType type;
+    IgvmHeaderSection section;
     int (*handler)(QIgvm *ctx, const uint8_t *header_data, Error **errp);
 };
 
@@ -143,7 +143,7 @@ static struct QIGVMHandler handlers[] = {
 #endif
 };
 
-static int qigvm_handler(QIgvm *ctx, uint32_t type, Error **errp)
+static int qigvm_handler(QIgvm *ctx, IgvmVariableHeaderType type, Error **errp)
 {
     size_t handler;
     IgvmHandle header_handle;

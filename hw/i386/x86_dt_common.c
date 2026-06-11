@@ -23,11 +23,16 @@
 #include "system/device_tree.h"
 #include "hw/char/serial-isa.h"
 #include "hw/core/sysbus.h"
+#include "hw/nvram/fw_cfg.h"
 #include "hw/virtio/virtio-mmio.h"
 #include "qom/object.h"
 
+#include "fw_cfg.h"
 #include "x86_dt_common.h"
 #include <libfdt.h>
+
+/* TODO: This should be exported from hw/misc/debugexit.c */
+#define TYPE_ISA_DEBUG_EXIT_DEVICE "isa-debug-exit"
 
 
 static bool debug;
@@ -61,6 +66,32 @@ static void dt_add_virtio(MachineState *ms, VirtIOMMIOProxy *mmio)
     g_free(nodename);
 }
 
+static void dt_add_fw_cfg(MachineState *ms)
+{
+    hwaddr base = FW_CFG_IO_BASE;
+    hwaddr size = FW_CFG_CTL_SIZE;
+    char *nodename;
+
+    nodename = g_strdup_printf("/fw-cfg@%" PRIx64, base);
+    qemu_fdt_add_subnode(ms->fdt, nodename);
+    qemu_fdt_setprop_string(ms->fdt, nodename, "compatible", "qemu,fw-cfg-io");
+    qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    g_free(nodename);
+}
+
+static void dt_add_debug_exit(MachineState *ms, ISADevice *dev)
+{
+    hwaddr base = object_property_get_int(OBJECT(dev), "iobase", &error_fatal);
+    hwaddr size = object_property_get_int(OBJECT(dev), "iosize", &error_fatal);
+    char *nodename;
+
+    nodename = g_strdup_printf("/debug-exit@%" PRIx64, base);
+    qemu_fdt_add_subnode(ms->fdt, nodename);
+    qemu_fdt_setprop_string(ms->fdt, nodename, "compatible", "qemu,debug-exit");
+    qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    g_free(nodename);
+}
+
 static void dt_add_isa_serial(MachineState *ms, ISADevice *dev)
 {
     const char compat[] = "ns16550";
@@ -91,6 +122,13 @@ static void dt_setup_isa_bus(MachineState *ms, BusState *bus)
         obj = object_dynamic_cast(OBJECT(dev), TYPE_ISA_SERIAL);
         if (obj) {
             dt_add_isa_serial(ms, ISA_DEVICE(obj));
+            continue;
+        }
+
+        /* debug-exit */
+        obj = object_dynamic_cast(OBJECT(dev), TYPE_ISA_DEBUG_EXIT_DEVICE);
+        if (obj) {
+            dt_add_debug_exit(ms, ISA_DEVICE(obj));
             continue;
         }
 
@@ -147,5 +185,6 @@ void dt_setup_x86(MachineState *ms)
     qemu_fdt_setprop_cell(ms->fdt, "/", "device-plane", ms->device_plane);
 
     dt_setup_sys_bus(ms);
+    dt_add_fw_cfg(ms);
 
 }

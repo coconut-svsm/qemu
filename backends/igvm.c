@@ -807,9 +807,10 @@ static int qigvm_directive_device_tree(QIgvm *ctx, const uint8_t *header_data,
     QIgvmParameterData *param_entry;
     uint32_t fdt_size;
 
-    param_entry = qigvm_find_param_entry(ctx,
-                                         param->parameter_area_index, errp);
+    param_entry = qigvm_find_param_entry(ctx, param->parameter_area_index, errp);
     if (param_entry == NULL) {
+        error_setg(errp, "IGVM: parameter area index %u not found",
+                   param->parameter_area_index);
         return -1;
     }
 

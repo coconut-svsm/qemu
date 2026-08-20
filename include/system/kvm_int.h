@@ -19,6 +19,29 @@
 #include "hw/i386/topology.h"
 #include "io/channel-socket.h"
 
+#define TYPE_KVM_PLANE "kvm-plane"
+OBJECT_DECLARE_SIMPLE_TYPE(KVMPlane, KVM_PLANE)
+
+#define TYPE_KVM_PLANE_VCPU "kvm-plane-vcpu"
+OBJECT_DECLARE_SIMPLE_TYPE(KVMPlaneVCPU, KVM_PLANE_VCPU)
+
+struct KVMPlaneVCPU {
+    Object parent_obj;
+    KVMPlane *plane;
+    CPUState *cpu;
+    uint64_t vcpu_id;
+    int fd;
+    int stats_fd;
+    bool dirty;
+};
+
+struct KVMPlane {
+    Object parent_obj;
+    KVMState *kvm;
+    unsigned int id;
+    int fd;
+};
+
 typedef struct KVMSlot
 {
     hwaddr start_addr;
@@ -108,6 +131,9 @@ struct KVMState
     int nr_slots_max;
     int fd;
     int vmfd;
+    KVMPlane *planes[KVM_MAX_PLANES];
+    unsigned int num_planes;
+    Error *plane_migration_blocker;
     int coalesced_mmio;
     int coalesced_pio;
     struct kvm_coalesced_mmio_ring *coalesced_mmio_ring;

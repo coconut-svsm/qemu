@@ -29,6 +29,7 @@
 #include "hw/s390x/adapter.h"
 #include "gdbstub/enums.h"
 #include "system/kvm_int.h"
+#include "migration/blocker.h"
 #include "system/runstate.h"
 #include "system/cpus.h"
 #include "system/accel-blocker.h"
@@ -2890,6 +2891,29 @@ static int kvm_reset_vmfd(MachineState *ms)
     return ret;
 }
 
+static KVMPlane *kvm_plane_object_new(KVMState *s, unsigned int id)
+{
+    g_autofree char *name = g_strdup_printf("plane[%u]", id);
+    Object *obj = object_new(TYPE_KVM_PLANE);
+    KVMPlane *plane = KVM_PLANE(obj);
+
+    plane->kvm = s;
+    plane->id = id;
+    plane->fd = id == 0 ? s->vmfd : -1;
+    object_property_add_child(OBJECT(s), name, obj);
+    object_unref(obj);
+    s->planes[id] = plane;
+
+    return plane;
+}
+
+static void kvm_init_plane_objects(KVMState *s)
+{
+    /* KVM_CAP_PLANES is not valid until architecture initialization. */
+    s->num_planes = 1;
+    kvm_plane_object_new(s, 0);
+}
+
 static int kvm_init(AccelState *as, MachineState *ms)
 {
     MachineClass *mc = MACHINE_GET_CLASS(ms);
@@ -2968,6 +2992,7 @@ static int kvm_init(AccelState *as, MachineState *ms)
     }
 
     s->vmfd = ret;
+    kvm_init_plane_objects(s);
 
     s->nr_as = kvm_vm_check_extension(s, KVM_CAP_MULTI_ADDRESS_SPACE);
     if (s->nr_as <= 1) {
@@ -4331,8 +4356,44 @@ static void kvm_accel_finalize(Object *obj)
 {
     KVMState *s = KVM_STATE(obj);
 
+    if (s->plane_migration_blocker) {
+        migrate_del_blocker(&s->plane_migration_blocker);
+    }
     g_free(s->device);
 }
+
+static void kvm_plane_init(Object *obj)
+{
+    KVMPlane *plane = KVM_PLANE(obj);
+
+    plane->fd = -1;
+    object_property_add_uint32_ptr(obj, "id", &plane->id,
+                                   OBJ_PROP_FLAG_READ);
+}
+
+static void kvm_plane_vcpu_init(Object *obj)
+{
+    KVMPlaneVCPU *vcpu = KVM_PLANE_VCPU(obj);
+
+    vcpu->fd = -1;
+    vcpu->stats_fd = -1;
+    object_property_add_uint64_ptr(obj, "vcpu-id", &vcpu->vcpu_id,
+                                   OBJ_PROP_FLAG_READ);
+}
+
+static const TypeInfo kvm_plane_type = {
+    .name = TYPE_KVM_PLANE,
+    .parent = TYPE_OBJECT,
+    .instance_size = sizeof(KVMPlane),
+    .instance_init = kvm_plane_init,
+};
+
+static const TypeInfo kvm_plane_vcpu_type = {
+    .name = TYPE_KVM_PLANE_VCPU,
+    .parent = TYPE_OBJECT,
+    .instance_size = sizeof(KVMPlaneVCPU),
+    .instance_init = kvm_plane_vcpu_init,
+};
 
 static const TypeInfo kvm_accel_type = {
     .name = TYPE_KVM_ACCEL,
@@ -4345,6 +4406,8 @@ static const TypeInfo kvm_accel_type = {
 
 static void kvm_type_init(void)
 {
+    type_register_static(&kvm_plane_type);
+    type_register_static(&kvm_plane_vcpu_type);
     type_register_static(&kvm_accel_type);
 }
 

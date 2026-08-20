@@ -2240,6 +2240,7 @@ void kvm_init_irq_routing(KVMState *s)
 
 void kvm_irqchip_commit_routes(KVMState *s)
 {
+    KVMPlane *plane;
     int ret;
 
     if (kvm_gsi_direct_mapping()) {
@@ -2252,7 +2253,8 @@ void kvm_irqchip_commit_routes(KVMState *s)
 
     s->irq_routes->flags = 0;
     trace_kvm_irqchip_commit_routes();
-    ret = kvm_vm_ioctl(s, KVM_SET_GSI_ROUTING, s->irq_routes);
+    plane = kvm_require_plane(s, qdev_default_irq_plane(), &error_abort);
+    ret = kvm_plane_ioctl(plane, KVM_SET_GSI_ROUTING, s->irq_routes);
     assert(ret == 0);
 }
 
@@ -2686,6 +2688,8 @@ static void kvm_irqchip_create(KVMState *s)
      * architecture initialization and in-kernel irqchip creation.
      */
     s->num_planes = accel_num_planes(ACCEL(s));
+    kvm_require_plane(s, qdev_default_irq_plane(), &error_fatal);
+
     kvm_init_irq_routing(s);
 
     s->gsimap = g_hash_table_new(g_direct_hash, g_direct_equal);

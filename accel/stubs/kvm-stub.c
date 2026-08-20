@@ -98,13 +98,14 @@ void kvm_vcpufd_remove_change_notifier(NotifierWithReturn *n)
 }
 
 int kvm_irqchip_add_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                       EventNotifier *rn, int virq)
+                                       EventNotifier *rn, int virq,
+                                       DeviceState *source)
 {
     return -ENOSYS;
 }
 
 int kvm_irqchip_remove_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                          int virq)
+                                          int virq, DeviceState *source)
 {
     return -ENOSYS;
 }

@@ -183,7 +183,7 @@ static void kvm_apic_external_nmi(APICCommonState *s)
     run_on_cpu(CPU(s->cpu), do_inject_external_nmi, RUN_ON_CPU_HOST_PTR(s));
 }
 
-static void kvm_send_msi(MSIMessage *msg)
+static void kvm_send_msi_plane(MSIMessage *msg, unsigned int plane_id)
 {
     int ret;
 
@@ -194,11 +194,16 @@ static void kvm_send_msi(MSIMessage *msg)
      */
     msg->address = kvm_swizzle_msi_ext_dest_id(msg->address);
 
-    ret = kvm_irqchip_send_msi(kvm_state, *msg);
+    ret = kvm_irqchip_send_msi(kvm_state, plane_id, *msg);
     if (ret < 0) {
         fprintf(stderr, "KVM: injection failed, MSI lost (%s)\n",
                 strerror(-ret));
     }
+}
+
+static void kvm_send_msi(MSIMessage *msg)
+{
+    kvm_send_msi_plane(msg, qdev_default_irq_plane());
 }
 
 static uint64_t kvm_apic_mem_read(void *opaque, hwaddr addr,
@@ -207,17 +212,21 @@ static uint64_t kvm_apic_mem_read(void *opaque, hwaddr addr,
     return ~(uint64_t)0;
 }
 
-static void kvm_apic_mem_write(void *opaque, hwaddr addr,
-                               uint64_t data, unsigned size)
+static MemTxResult kvm_apic_mem_write(void *opaque, hwaddr addr,
+                                      uint64_t data, unsigned size,
+                                      MemTxAttrs attrs)
 {
     MSIMessage msg = { .address = addr, .data = data };
+    unsigned int plane_id = attrs.irq_plane_valid ?
+                            attrs.irq_plane : qdev_default_irq_plane();
 
-    kvm_send_msi(&msg);
+    kvm_send_msi_plane(&msg, plane_id);
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps kvm_apic_io_ops = {
     .read = kvm_apic_mem_read,
-    .write = kvm_apic_mem_write,
+    .write_with_attrs = kvm_apic_mem_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 

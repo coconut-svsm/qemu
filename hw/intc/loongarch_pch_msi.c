@@ -32,7 +32,7 @@ static void loongarch_msi_mem_write(void *opaque, hwaddr addr,
 
         msg.address = addr;
         msg.data = val;
-        kvm_irqchip_send_msi(kvm_state, msg);
+        kvm_irqchip_send_msi(kvm_state, qdev_get_irq_plane(DEVICE(s)), msg);
         return;
     }
 

@@ -202,12 +202,13 @@ void vfio_cpr_add_kvm_notifier(void)
 }
 
 static int set_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                  EventNotifier *rn, int virq, bool enable)
+                                  EventNotifier *rn, int virq, bool enable,
+                                  DeviceState *source)
 {
     if (enable) {
-        return kvm_irqchip_add_irqfd_notifier_gsi(s, n, rn, virq);
+        return kvm_irqchip_add_irqfd_notifier_gsi(s, n, rn, virq, source);
     } else {
-        return kvm_irqchip_remove_irqfd_notifier_gsi(s, n, virq);
+        return kvm_irqchip_remove_irqfd_notifier_gsi(s, n, virq, source);
     }
 }
 
@@ -226,7 +227,7 @@ static int vfio_cpr_set_msi_virq(VFIOPCIDevice *vdev, Error **errp, bool enable)
     } else if (vfio_pci_read_config(pdev, PCI_INTERRUPT_PIN, 1)) {
         ret = set_irqfd_notifier_gsi(kvm_state, &vdev->intx.interrupt,
                                      &vdev->intx.unmask, vdev->intx.route.irq,
-                                     enable);
+                                     enable, DEVICE(vdev));
         if (ret) {
             error_setg_errno(errp, -ret, "failed to %s INTx irq %d",
                              op, vdev->intx.route.irq);
@@ -243,7 +244,8 @@ static int vfio_cpr_set_msi_virq(VFIOPCIDevice *vdev, Error **errp, bool enable)
         VFIOMSIVector *vector = &vdev->msi_vectors[i];
         if (vector->use) {
             ret = set_irqfd_notifier_gsi(kvm_state, &vector->kvm_interrupt,
-                                         NULL, vector->virq, enable);
+                                         NULL, vector->virq, enable,
+                                         DEVICE(vdev));
             if (ret) {
                 error_setg_errno(errp, -ret,
                                  "failed to %s msi vector %d virq %d",

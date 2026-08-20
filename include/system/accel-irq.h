@@ -33,6 +33,7 @@ void accel_irqchip_commit_route_changes(AccelRouteChange *c);
 void accel_irqchip_commit_routes(void);
 void accel_irqchip_release_virq(int virq);
 int accel_irqchip_add_irqfd_notifier_gsi(EventNotifier *n, EventNotifier *rn,
-                                         int virq);
-int accel_irqchip_remove_irqfd_notifier_gsi(EventNotifier *n, int virq);
+                                         int virq, DeviceState *source);
+int accel_irqchip_remove_irqfd_notifier_gsi(EventNotifier *n, int virq,
+                                            DeviceState *source);
 #endif

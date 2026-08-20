@@ -487,7 +487,7 @@ void kvm_xen_inject_vcpu_callback_vector(uint32_t vcpu_id, int type)
                        (X86_CPU(cs)->apic_id << MSI_ADDR_DEST_ID_SHIFT),
             .data = vector | (1UL << MSI_DATA_LEVEL_SHIFT),
         };
-        kvm_irqchip_send_msi(kvm_state, msg);
+        kvm_irqchip_send_msi(kvm_state, qdev_default_irq_plane(), msg);
         return;
     }
 

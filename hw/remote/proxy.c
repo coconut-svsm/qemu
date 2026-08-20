@@ -33,7 +33,8 @@ static void proxy_intx_update(PCIDevice *pci_dev)
     int pin = pci_get_byte(pci_dev->config + PCI_INTERRUPT_PIN) - 1;
 
     if (dev->virq != -1) {
-        kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, &dev->intr, dev->virq);
+        kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, &dev->intr,
+                                              dev->virq, DEVICE(dev));
         dev->virq = -1;
     }
 
@@ -43,7 +44,8 @@ static void proxy_intx_update(PCIDevice *pci_dev)
 
     if (dev->virq != -1) {
         kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, &dev->intr,
-                                           &dev->resample, dev->virq);
+                                           &dev->resample, dev->virq,
+                                           DEVICE(dev));
     }
 }
 

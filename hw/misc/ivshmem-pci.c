@@ -293,7 +293,8 @@ static int ivshmem_vector_unmask(PCIDevice *dev, unsigned vector,
     }
     kvm_irqchip_commit_routes(kvm_state);
 
-    ret = kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, NULL, v->virq);
+    ret = kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, NULL, v->virq,
+                                             DEVICE(dev));
     if (ret < 0) {
         return ret;
     }
@@ -316,7 +317,8 @@ static void ivshmem_vector_mask(PCIDevice *dev, unsigned vector)
     }
     assert(v->unmasked);
 
-    ret = kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, n, v->virq);
+    ret = kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, n, v->virq,
+                                                DEVICE(dev));
     if (ret < 0) {
         error_report("remove_irqfd_notifier_gsi failed");
         return;
@@ -466,7 +468,8 @@ static bool setup_interrupt(IVShmemState *s, int vector, Error **errp)
 
         if (!msix_is_masked(pdev, vector)) {
             ret = kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, NULL,
-                                               s->msi_vectors[vector].virq);
+                                               s->msi_vectors[vector].virq,
+                                               DEVICE(s));
             if (ret < 0) {
                 error_setg(errp, "Failed to configure irqfd notifier");
                 return false;

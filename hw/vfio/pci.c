@@ -176,7 +176,8 @@ static bool vfio_intx_enable_kvm(VFIOPCIDevice *vdev, Error **errp)
     if (kvm_irqchip_add_irqfd_notifier_gsi(kvm_state,
                                            &vdev->intx.interrupt,
                                            &vdev->intx.unmask,
-                                           vdev->intx.route.irq)) {
+                                           vdev->intx.route.irq,
+                                           DEVICE(vdev))) {
         error_setg_errno(errp, errno, "failed to setup resample irqfd");
         goto fail_irqfd;
     }
@@ -199,7 +200,7 @@ static bool vfio_intx_enable_kvm(VFIOPCIDevice *vdev, Error **errp)
 
 fail_vfio:
     kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, &vdev->intx.interrupt,
-                                          vdev->intx.route.irq);
+                                          vdev->intx.route.irq, DEVICE(vdev));
 fail_irqfd:
     vfio_notifier_cleanup(vdev, &vdev->intx.unmask, "intx-unmask", 0);
 fail:
@@ -223,7 +224,8 @@ static bool vfio_cpr_intx_enable_kvm(VFIOPCIDevice *vdev, Error **errp)
     if (kvm_irqchip_add_irqfd_notifier_gsi(kvm_state,
                                            &vdev->intx.interrupt,
                                            &vdev->intx.unmask,
-                                           vdev->intx.route.irq)) {
+                                           vdev->intx.route.irq,
+                                           DEVICE(vdev))) {
         error_setg_errno(errp, errno, "failed to setup resample irqfd");
         vfio_notifier_cleanup(vdev, &vdev->intx.unmask, "intx-unmask", 0);
         return false;
@@ -252,7 +254,8 @@ static void vfio_intx_disable_kvm(VFIOPCIDevice *vdev)
 
     /* Tell KVM to stop listening for an INTx irqfd */
     if (kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, &vdev->intx.interrupt,
-                                              vdev->intx.route.irq)) {
+                                              vdev->intx.route.irq,
+                                              DEVICE(vdev))) {
         error_report("vfio: Error: Failed to disable INTx irqfd: %m");
     }
 
@@ -599,7 +602,8 @@ static void vfio_connect_kvm_msi_virq(VFIOMSIVector *vector, int nr)
     }
 
     if (kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, &vector->kvm_interrupt,
-                                           NULL, vector->virq) < 0) {
+                                           NULL, vector->virq,
+                                           DEVICE(vector->vdev)) < 0) {
         goto fail_kvm;
     }
 
@@ -616,7 +620,7 @@ static void vfio_remove_kvm_msi_virq(VFIOPCIDevice *vdev, VFIOMSIVector *vector,
                                      int nr)
 {
     kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, &vector->kvm_interrupt,
-                                          vector->virq);
+                                          vector->virq, DEVICE(vdev));
     kvm_irqchip_release_virq(kvm_state, vector->virq);
     vector->virq = -1;
     vfio_notifier_cleanup(vdev, &vector->kvm_interrupt, "kvm_interrupt", nr);

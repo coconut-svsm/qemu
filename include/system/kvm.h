@@ -396,7 +396,7 @@ int kvm_arch_release_virq_post(int virq);
 int kvm_arch_msi_data_to_gsi(uint32_t data);
 
 int kvm_set_irq(KVMState *s, int irq, int level);
-int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg);
+int kvm_irqchip_send_msi(KVMState *s, unsigned int plane_id, MSIMessage msg);
 
 void kvm_irqchip_add_irq_route(KVMState *s, int gsi, int irqchip, int pin);
 
@@ -492,9 +492,10 @@ void kvm_add_routing_entry(KVMState *s,
                            struct kvm_irq_routing_entry *entry);
 
 int kvm_irqchip_add_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                       EventNotifier *rn, int virq);
+                                       EventNotifier *rn, int virq,
+                                       DeviceState *source);
 int kvm_irqchip_remove_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                          int virq);
+                                          int virq, DeviceState *source);
 int kvm_irqchip_add_irqfd_notifier(KVMState *s, EventNotifier *n,
                                    EventNotifier *rn, qemu_irq irq);
 int kvm_irqchip_remove_irqfd_notifier(KVMState *s, EventNotifier *n,

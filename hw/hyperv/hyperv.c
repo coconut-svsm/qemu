@@ -467,7 +467,7 @@ HvSintRoute *hyperv_sint_route_new(uint32_t vp_index, uint32_t sint,
 
     r = kvm_irqchip_add_irqfd_notifier_gsi(kvm_state,
                                            &sint_route->sint_set_notifier,
-                                           ack_notifier, gsi);
+                                           ack_notifier, gsi, NULL);
     if (r) {
         goto cleanup_err_irqfd;
     }
@@ -525,7 +525,7 @@ void hyperv_sint_route_unref(HvSintRoute *sint_route)
     if (sint_route->gsi) {
         kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state,
                                               &sint_route->sint_set_notifier,
-                                              sint_route->gsi);
+                                              sint_route->gsi, NULL);
         kvm_irqchip_release_virq(kvm_state, sint_route->gsi);
         event_notifier_cleanup(&sint_route->sint_set_notifier);
     }

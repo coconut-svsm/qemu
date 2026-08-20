@@ -1208,7 +1208,7 @@ static void tdx_inject_interrupt(TdxGuest *tdx)
         .data = vector | (APIC_DM_FIXED << MSI_DATA_DELIVERY_MODE_SHIFT),
     };
 
-    ret = kvm_irqchip_send_msi(kvm_state, msg);
+    ret = kvm_irqchip_send_msi(kvm_state, qdev_default_irq_plane(), msg);
     if (ret < 0) {
         /* In this case, no better way to tell it to guest. Log it. */
         error_report("TDX: injection interrupt %d failed, interrupt lost (%s).",

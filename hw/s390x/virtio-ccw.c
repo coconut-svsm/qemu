@@ -1004,7 +1004,7 @@ static int virtio_ccw_add_irqfd(VirtioCcwDevice *dev, int n)
     EventNotifier *notifier = virtio_queue_get_guest_notifier(vq);
 
     return kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, notifier, NULL,
-                                              dev->routes.gsi[n]);
+                                              dev->routes.gsi[n], DEVICE(dev));
 }
 
 static void virtio_ccw_remove_irqfd(VirtioCcwDevice *dev, int n)
@@ -1015,7 +1015,8 @@ static void virtio_ccw_remove_irqfd(VirtioCcwDevice *dev, int n)
     int ret;
 
     ret = kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, notifier,
-                                                dev->routes.gsi[n]);
+                                                dev->routes.gsi[n],
+                                                DEVICE(dev));
     assert(ret == 0);
 }
 

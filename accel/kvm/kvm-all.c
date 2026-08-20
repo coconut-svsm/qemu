@@ -2401,9 +2401,17 @@ int kvm_irqchip_get_virq(KVMState *s)
     }
 }
 
-int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg)
+int kvm_irqchip_send_msi(KVMState *s, unsigned int plane_id, MSIMessage msg)
 {
     struct kvm_msi msi;
+    KVMPlane *plane;
+    Error *err = NULL;
+
+    plane = kvm_require_plane(s, plane_id, &err);
+    if (!plane) {
+        error_report_err(err);
+        return -EINVAL;
+    }
 
     msi.address_lo = (uint32_t)msg.address;
     msi.address_hi = msg.address >> 32;
@@ -2411,7 +2419,7 @@ int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg)
     msi.flags = 0;
     memset(msi.pad, 0, sizeof(msi.pad));
 
-    return kvm_vm_ioctl(s, KVM_SIGNAL_MSI, &msi);
+    return kvm_plane_ioctl(plane, KVM_SIGNAL_MSI, &msi);
 }
 
 int kvm_irqchip_add_msi_route(AccelRouteChange *c, int vector, PCIDevice *dev)
@@ -2502,7 +2510,7 @@ int kvm_irqchip_update_msi_route(KVMState *s, int virq, MSIMessage msg,
 
 static int kvm_irqchip_assign_irqfd(KVMState *s, EventNotifier *event,
                                     EventNotifier *resample, int virq,
-                                    bool assign)
+                                    bool assign, DeviceState *source)
 {
     int fd = event_notifier_get_fd(event);
     int rfd = resample ? event_notifier_get_fd(resample) : -1;
@@ -2512,6 +2520,16 @@ static int kvm_irqchip_assign_irqfd(KVMState *s, EventNotifier *event,
         .gsi = virq,
         .flags = assign ? 0 : KVM_IRQFD_FLAG_DEASSIGN,
     };
+    unsigned int plane_id = source ? qdev_get_irq_plane(source) :
+                                     qdev_default_irq_plane();
+    KVMPlane *plane;
+    Error *err = NULL;
+
+    plane = kvm_require_plane(s, plane_id, &err);
+    if (!plane) {
+        error_report_err(err);
+        return -EINVAL;
+    }
 
     if (rfd != -1) {
         assert(assign);
@@ -2543,7 +2561,7 @@ static int kvm_irqchip_assign_irqfd(KVMState *s, EventNotifier *event,
         }
     }
 
-    return kvm_vm_ioctl(s, KVM_IRQFD, &irqfd);
+    return kvm_plane_ioctl(plane, KVM_IRQFD, &irqfd);
 }
 
 #else /* !KVM_CAP_IRQ_ROUTING */
@@ -2556,7 +2574,7 @@ void kvm_irqchip_release_virq(KVMState *s, int virq)
 {
 }
 
-int kvm_irqchip_send_msi(KVMState *s, MSIMessage msg)
+int kvm_irqchip_send_msi(KVMState *s, unsigned int plane_id, MSIMessage msg)
 {
     abort();
 }
@@ -2578,7 +2596,7 @@ int kvm_irqchip_add_hv_sint_route(KVMState *s, uint32_t vcpu, uint32_t sint)
 
 static int kvm_irqchip_assign_irqfd(KVMState *s, EventNotifier *event,
                                     EventNotifier *resample, int virq,
-                                    bool assign)
+                                    bool assign, DeviceState *source)
 {
     abort();
 }
@@ -2590,15 +2608,16 @@ int kvm_irqchip_update_msi_route(KVMState *s, int virq, MSIMessage msg)
 #endif /* !KVM_CAP_IRQ_ROUTING */
 
 int kvm_irqchip_add_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                       EventNotifier *rn, int virq)
+                                       EventNotifier *rn, int virq,
+                                       DeviceState *source)
 {
-    return kvm_irqchip_assign_irqfd(s, n, rn, virq, true);
+    return kvm_irqchip_assign_irqfd(s, n, rn, virq, true, source);
 }
 
 int kvm_irqchip_remove_irqfd_notifier_gsi(KVMState *s, EventNotifier *n,
-                                          int virq)
+                                          int virq, DeviceState *source)
 {
-    return kvm_irqchip_assign_irqfd(s, n, NULL, virq, false);
+    return kvm_irqchip_assign_irqfd(s, n, NULL, virq, false, source);
 }
 
 int kvm_irqchip_add_irqfd_notifier(KVMState *s, EventNotifier *n,
@@ -2610,7 +2629,8 @@ int kvm_irqchip_add_irqfd_notifier(KVMState *s, EventNotifier *n,
     if (!found) {
         return -ENXIO;
     }
-    return kvm_irqchip_add_irqfd_notifier_gsi(s, n, rn, GPOINTER_TO_INT(gsi));
+    return kvm_irqchip_add_irqfd_notifier_gsi(s, n, rn,
+                                              GPOINTER_TO_INT(gsi), NULL);
 }
 
 int kvm_irqchip_remove_irqfd_notifier(KVMState *s, EventNotifier *n,
@@ -2622,7 +2642,8 @@ int kvm_irqchip_remove_irqfd_notifier(KVMState *s, EventNotifier *n,
     if (!found) {
         return -ENXIO;
     }
-    return kvm_irqchip_remove_irqfd_notifier_gsi(s, n, GPOINTER_TO_INT(gsi));
+    return kvm_irqchip_remove_irqfd_notifier_gsi(s, n,
+                                                 GPOINTER_TO_INT(gsi), NULL);
 }
 
 void kvm_irqchip_set_qemuirq_gsi(KVMState *s, qemu_irq irq, int gsi)

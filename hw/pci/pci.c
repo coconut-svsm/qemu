@@ -453,6 +453,8 @@ static void pci_msi_trigger(PCIDevice *dev, MSIMessage msg)
         return;
     }
     attrs.requester_id = pci_requester_id(dev);
+    attrs.irq_plane = qdev_get_irq_plane(DEVICE(dev));
+    attrs.irq_plane_valid = true;
     address_space_stl_le(&dev->bus_master_as, msg.address, msg.data,
                          attrs, NULL);
 }

@@ -68,24 +68,27 @@ void accel_irqchip_release_virq(int virq)
 }
 
 int accel_irqchip_add_irqfd_notifier_gsi(EventNotifier *n, EventNotifier *rn,
-                                         int virq)
+                                         int virq, DeviceState *source)
 {
     if (mshv_msi_via_irqfd_enabled()) {
         return mshv_irqchip_add_irqfd_notifier_gsi(n, rn, virq);
     }
     if (kvm_enabled()) {
-        return kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, rn, virq);
+        return kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, n, rn, virq,
+                                                  source);
     }
     return -ENOSYS;
 }
 
-int accel_irqchip_remove_irqfd_notifier_gsi(EventNotifier *n, int virq)
+int accel_irqchip_remove_irqfd_notifier_gsi(EventNotifier *n, int virq,
+                                            DeviceState *source)
 {
     if (mshv_msi_via_irqfd_enabled()) {
         return mshv_irqchip_remove_irqfd_notifier_gsi(n, virq);
     }
     if (kvm_enabled()) {
-        return kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, n, virq);
+        return kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, n, virq,
+                                                     source);
     }
     return -ENOSYS;
 }

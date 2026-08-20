@@ -40,6 +40,7 @@ struct KVMPlane {
     KVMState *kvm;
     unsigned int id;
     int fd;
+    bool active;
 };
 
 typedef struct KVMSlot

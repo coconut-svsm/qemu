@@ -132,6 +132,7 @@ static NotifierWithReturnList register_vcpufd_changed_notifiers =
 static int map_kvm_run(KVMState *s, CPUState *cpu, Error **errp);
 static int map_kvm_dirty_gfns(KVMState *s, CPUState *cpu, Error **errp);
 static int vcpu_unmap_regions(KVMState *s, CPUState *cpu);
+static int kvm_recreate_planes(KVMState *s, Error **errp);
 
 struct KVMResampleFd {
     int gsi;
@@ -755,6 +756,7 @@ err:
 void kvm_close(void)
 {
     CPUState *cpu;
+    unsigned int i;
 
     if (!kvm_state || kvm_state->fd == -1) {
         return;
@@ -769,8 +771,15 @@ void kvm_close(void)
     }
 
     if (kvm_state && kvm_state->fd != -1) {
+        for (i = 1; i < kvm_state->num_planes; i++) {
+            if (kvm_state->planes[i] && kvm_state->planes[i]->fd >= 0) {
+                close(kvm_state->planes[i]->fd);
+                kvm_state->planes[i]->fd = -1;
+            }
+        }
         close(kvm_state->vmfd);
         kvm_state->vmfd = -1;
+        kvm_state->planes[0]->fd = -1;
         close(kvm_state->fd);
         kvm_state->fd = -1;
     }
@@ -2627,6 +2636,11 @@ static void kvm_irqchip_create(KVMState *s)
     kvm_async_interrupts_allowed = true;
     kvm_halt_in_kernel_allowed = true;
 
+    /*
+     * KVM_CAP_PLANES is VM- and irqchip-dependent.  Query it only after
+     * architecture initialization and in-kernel irqchip creation.
+     */
+    s->num_planes = accel_num_planes(ACCEL(s));
     kvm_init_irq_routing(s);
 
     s->gsimap = g_hash_table_new(g_direct_hash, g_direct_equal);
@@ -2779,6 +2793,7 @@ static int kvm_reset_vmfd(MachineState *ms)
     KVMState *s;
     KVMMemoryListener *kml;
     int ret = 0, type;
+    unsigned int i;
     Error *err = NULL;
 
     /*
@@ -2804,6 +2819,12 @@ static int kvm_reset_vmfd(MachineState *ms)
     }
     assert(!err);
 
+    for (i = 1; i < s->num_planes; i++) {
+        if (s->planes[i] && s->planes[i]->fd >= 0) {
+            close(s->planes[i]->fd);
+            s->planes[i]->fd = -1;
+        }
+    }
     if (s->vmfd >= 0) {
         close(s->vmfd);
     }
@@ -2819,6 +2840,7 @@ static int kvm_reset_vmfd(MachineState *ms)
     }
 
     s->vmfd = ret;
+    s->planes[0]->fd = ret;
 
     /* guest state is now unprotected again */
     kvm_state->guest_state_protected = false;
@@ -2840,6 +2862,12 @@ static int kvm_reset_vmfd(MachineState *ms)
     if (s->kernel_irqchip_allowed) {
         /* ignore return from this function */
         do_kvm_irqchip_create(s);
+    }
+
+    ret = kvm_recreate_planes(s, &err);
+    if (ret < 0) {
+        error_report_err(err);
+        return ret;
     }
 
     /*
@@ -2900,11 +2928,85 @@ static KVMPlane *kvm_plane_object_new(KVMState *s, unsigned int id)
     plane->kvm = s;
     plane->id = id;
     plane->fd = id == 0 ? s->vmfd : -1;
+    plane->active = id == 0;
     object_property_add_child(OBJECT(s), name, obj);
     object_unref(obj);
     s->planes[id] = plane;
 
     return plane;
+}
+
+static void kvm_accel_request_plane(AccelState *accel, unsigned int id)
+{
+    KVMState *s = KVM_STATE(accel);
+
+    assert(id < s->num_planes);
+    if (!s->planes[id]) {
+        kvm_plane_object_new(s, id);
+    }
+}
+
+KVMPlane *kvm_get_plane(KVMState *s, unsigned int id)
+{
+    return id < s->num_planes ? s->planes[id] : NULL;
+}
+
+KVMPlane *kvm_require_plane(KVMState *s, unsigned int id, Error **errp)
+{
+    KVMPlane *plane;
+    bool added_blocker = false;
+    int fd;
+
+    if (id >= s->num_planes) {
+        error_setg(errp, "KVM plane %u is not supported", id);
+        return NULL;
+    }
+    plane = s->planes[id];
+    if (!plane) {
+        plane = kvm_plane_object_new(s, id);
+    }
+    if (plane->fd >= 0) {
+        return plane;
+    }
+    if (!kvm_irqchip_in_kernel()) {
+        error_setg(errp, "KVM planes require an in-kernel IRQ chip");
+        return NULL;
+    }
+
+    if (!s->plane_migration_blocker) {
+        error_setg(&s->plane_migration_blocker,
+                   "migration with nonzero KVM planes is not supported");
+        if (migrate_add_blocker(&s->plane_migration_blocker, errp) < 0) {
+            return NULL;
+        }
+        added_blocker = true;
+    }
+
+    fd = kvm_vm_ioctl(s, KVM_CREATE_PLANE, id);
+    if (fd < 0) {
+        error_setg_errno(errp, -fd, "failed to create KVM plane %u", id);
+        if (added_blocker) {
+            migrate_del_blocker(&s->plane_migration_blocker);
+        }
+        return NULL;
+    }
+
+    plane->fd = fd;
+    plane->active = true;
+    return plane;
+}
+
+static int kvm_recreate_planes(KVMState *s, Error **errp)
+{
+    unsigned int i;
+
+    for (i = 1; i < s->num_planes; i++) {
+        if (s->planes[i] && s->planes[i]->active &&
+            !kvm_require_plane(s, i, errp)) {
+            return -EINVAL;
+        }
+    }
+    return 0;
 }
 
 static void kvm_init_plane_objects(KVMState *s)
@@ -3679,6 +3781,24 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
     return ret;
 }
 
+int kvm_plane_ioctl(KVMPlane *plane, unsigned long type, ...)
+{
+    void *arg;
+    va_list ap;
+    int ret;
+
+    va_start(ap, type);
+    arg = va_arg(ap, void *);
+    va_end(ap);
+
+    trace_kvm_plane_ioctl(plane->id, type, arg);
+    accel_ioctl_begin();
+    ret = ioctl(plane->fd, type, arg);
+    accel_ioctl_end();
+
+    return ret == -1 ? -errno : ret;
+}
+
 int kvm_vcpu_ioctl(CPUState *cpu, unsigned long type, ...)
 {
     int ret;
@@ -4125,7 +4245,14 @@ static bool kvm_accel_has_memory(AccelState *accel, AddressSpace *as,
 static unsigned int kvm_accel_num_planes(AccelState *accel)
 {
     KVMState *s = KVM_STATE(accel);
-    int count = kvm_vm_check_extension(s, KVM_CAP_PLANES);
+    int count;
+
+    /* Keep the valid post-irqchip result across VM fd replacement. */
+    if (s->num_planes > 1) {
+        return s->num_planes;
+    }
+
+    count = kvm_vm_check_extension(s, KVM_CAP_PLANES);
 
     if (count < 1) {
         return 1;
@@ -4314,6 +4441,7 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
     ac->rebuild_guest = kvm_reset_vmfd;
     ac->has_memory = kvm_accel_has_memory;
     ac->num_planes = kvm_accel_num_planes;
+    ac->request_plane = kvm_accel_request_plane;
     ac->allowed = &kvm_allowed;
 
     object_class_property_add(oc, "kernel-irqchip", "on|off|split",

@@ -175,6 +175,7 @@ typedef struct KVMCapabilityInfo {
 #define KVM_CAP_LAST_INFO { NULL, 0 }
 
 struct KVMState;
+typedef struct KVMPlane KVMPlane;
 
 #define TYPE_KVM_ACCEL ACCEL_CLASS_NAME("kvm")
 typedef struct KVMState KVMState;
@@ -213,6 +214,9 @@ int kvm_on_sigbus(int code, void *addr);
 int kvm_check_extension(KVMState *s, unsigned int extension);
 
 int kvm_vm_ioctl(KVMState *s, unsigned long type, ...);
+int kvm_plane_ioctl(KVMPlane *plane, unsigned long type, ...);
+KVMPlane *kvm_get_plane(KVMState *s, unsigned int id);
+KVMPlane *kvm_require_plane(KVMState *s, unsigned int id, Error **errp);
 
 void kvm_flush_coalesced_mmio_buffer(void);
 

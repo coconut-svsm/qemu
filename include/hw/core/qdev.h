@@ -295,6 +295,14 @@ struct DeviceState {
      * Used to prevent re-entrancy confusing things.
      */
     MemReentrancyGuard mem_reentrancy_guard;
+    /**
+     * @irq_plane: IRQ plane explicitly selected for this device
+     */
+    uint8_t irq_plane;
+    /**
+     * @irq_plane_set: whether @irq_plane overrides the machine default
+     */
+    bool irq_plane_set;
 };
 
 typedef struct DeviceListener DeviceListener;
@@ -533,6 +541,10 @@ void qdev_simple_device_unplug_cb(HotplugHandler *hotplug_dev,
                                   DeviceState *dev, Error **errp);
 void qdev_machine_creation_done(void);
 bool qdev_machine_modified(void);
+uint8_t qdev_get_irq_plane(DeviceState *dev);
+uint8_t qdev_default_irq_plane(void);
+unsigned int qdev_num_irq_planes(void);
+void qdev_request_irq_plane(DeviceState *dev);
 
 /**
  * qdev_add_unplug_blocker: Add an unplug blocker to a device

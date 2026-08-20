@@ -4,6 +4,24 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 
+static uint8_t test_default_irq_plane;
+static unsigned int test_num_irq_planes = 1;
+static int test_requested_irq_plane = -1;
+
+uint8_t qdev_default_irq_plane(void)
+{
+    return test_default_irq_plane;
+}
+
+unsigned int qdev_num_irq_planes(void)
+{
+    return test_num_irq_planes;
+}
+
+void qdev_request_irq_plane(DeviceState *dev)
+{
+    test_requested_irq_plane = qdev_get_irq_plane(dev);
+}
 
 #define TYPE_MY_DEV "my-dev"
 typedef struct MyDev MyDev;
@@ -78,6 +96,38 @@ static void test_qdev_free_properties(void)
     object_unref(mt);
 }
 
+static void test_qdev_irq_plane(void)
+{
+    DeviceState *dev = DEVICE(object_new(TYPE_MY_DEV));
+    DeviceState *bad = DEVICE(object_new(TYPE_MY_DEV));
+    Error *err = NULL;
+
+    test_default_irq_plane = 3;
+    test_num_irq_planes = 4;
+    g_assert_cmpuint(qdev_get_irq_plane(dev), ==, 3);
+
+    object_property_set_uint(OBJECT(dev), "plane", 2, &error_abort);
+    g_assert_cmpuint(qdev_get_irq_plane(dev), ==, 2);
+    qdev_realize(dev, NULL, &error_abort);
+    g_assert_cmpint(test_requested_irq_plane, ==, 2);
+    object_property_set_uint(OBJECT(dev), "plane", 1, &err);
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+
+    object_property_set_uint(OBJECT(bad), "plane", 4, &error_abort);
+    qdev_realize(bad, NULL, &err);
+    g_assert_nonnull(err);
+    error_free(err);
+
+    object_unparent(OBJECT(dev));
+    object_unref(dev);
+    object_unref(bad);
+    test_default_irq_plane = 0;
+    test_num_irq_planes = 1;
+    test_requested_irq_plane = -1;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -89,6 +139,7 @@ int main(int argc, char **argv)
 
     g_test_add_func("/qdev/free-properties",
                     test_qdev_free_properties);
+    g_test_add_func("/qdev/irq-plane", test_qdev_irq_plane);
 
     g_test_run();
 

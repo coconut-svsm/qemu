@@ -489,6 +489,14 @@ static void device_set_realized(Object *obj, bool value, Error **errp)
     }
 
     if (value && !dev->realized) {
+        if (qdev_get_irq_plane(dev) >= qdev_num_irq_planes()) {
+            error_setg(errp, "device requests unsupported IRQ plane %u",
+                       qdev_get_irq_plane(dev));
+            goto fail;
+        }
+        if (dev->irq_plane_set) {
+            qdev_request_irq_plane(dev);
+        }
         if (!check_only_migratable(obj, errp)) {
             goto fail;
         }
@@ -653,6 +661,39 @@ static bool device_get_hotplugged(Object *obj, Error **errp)
     return dev->hotplugged;
 }
 
+uint8_t qdev_get_irq_plane(DeviceState *dev)
+{
+    if (dev && dev->irq_plane_set) {
+        return dev->irq_plane;
+    }
+    return qdev_default_irq_plane();
+}
+
+static void device_get_irq_plane(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    uint8_t value = qdev_get_irq_plane(DEVICE(obj));
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void device_set_irq_plane(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    DeviceState *dev = DEVICE(obj);
+    uint8_t value;
+
+    if (dev->realized) {
+        error_setg(errp, "plane cannot be changed after device realization");
+        return;
+    }
+    if (!visit_type_uint8(v, name, &value, errp)) {
+        return;
+    }
+    dev->irq_plane = value;
+    dev->irq_plane_set = true;
+}
+
 static void device_initfn(Object *obj)
 {
     DeviceState *dev = DEVICE(obj);
@@ -787,6 +828,9 @@ static void device_class_init(ObjectClass *class, const void *data)
                                    device_get_hotplugged, NULL);
     object_class_property_add_link(class, "parent_bus", TYPE_BUS,
                                    offsetof(DeviceState, parent_bus), NULL, 0);
+    object_class_property_add(class, "plane", "uint8",
+                              device_get_irq_plane, device_set_irq_plane,
+                              NULL, NULL);
 }
 
 static void do_legacy_reset(Object *obj, ResetType type)

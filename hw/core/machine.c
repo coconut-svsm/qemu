@@ -1054,6 +1054,52 @@ out:
     return r;
 }
 
+static void machine_get_device_plane(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    uint8_t value = MACHINE(obj)->device_plane;
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void machine_set_device_plane(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    uint8_t value;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp,
+                   "device-plane cannot be changed after machine initialization");
+        return;
+    }
+    if (visit_type_uint8(v, name, &value, errp)) {
+        MACHINE(obj)->device_plane = value;
+    }
+}
+
+uint8_t qdev_default_irq_plane(void)
+{
+    return current_machine ? current_machine->device_plane : 0;
+}
+
+unsigned int qdev_num_irq_planes(void)
+{
+    if (!current_machine || !current_machine->accelerator) {
+        return 1;
+    }
+    return accel_num_planes(current_machine->accelerator);
+}
+
+void qdev_request_irq_plane(DeviceState *dev)
+{
+    if (current_machine && current_machine->accelerator) {
+        accel_request_plane(current_machine->accelerator,
+                            qdev_get_irq_plane(dev));
+    }
+}
+
 static void machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -1236,6 +1282,11 @@ static void machine_initfn(Object *obj)
     ms->kernel_cmdline = g_strdup("");
     ms->ram_size = mc->default_ram_size;
     ms->maxram_size = mc->default_ram_size;
+    object_property_add(obj, "device-plane", "uint8",
+                        machine_get_device_plane, machine_set_device_plane,
+                        NULL, NULL);
+    object_property_set_description(obj, "device-plane",
+                                    "Default plane to receive device IRQs");
 
     if (mc->nvdimm_supported) {
         ms->nvdimms_state = g_new0(NVDIMMState, 1);
@@ -1693,6 +1744,13 @@ void machine_run_board_init(MachineState *machine, const char *mem_path, Error *
         object_register_sugar_prop(TYPE_VIRTIO_DEVICE, "iommu_platform",
                                    "on", false);
     }
+
+    if (machine->device_plane >= accel_num_planes(machine->accelerator)) {
+        error_setg(errp, "machine requests unsupported IRQ plane %u",
+                   machine->device_plane);
+        return;
+    }
+    accel_request_plane(machine->accelerator, machine->device_plane);
 
     accel_init_interfaces(ACCEL_GET_CLASS(machine->accelerator));
     machine_class->init(machine);

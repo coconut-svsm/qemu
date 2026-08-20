@@ -454,6 +454,7 @@ struct MachineState {
      * Set to false by default for all regular use.
      */
     bool new_accel_vmfd_on_reset;
+    uint8_t device_plane;
 };
 
 /*

@@ -29,6 +29,19 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 
+uint8_t qdev_default_irq_plane(void)
+{
+    return 0;
+}
+
+unsigned int qdev_num_irq_planes(void)
+{
+    return 1;
+}
+
+void qdev_request_irq_plane(DeviceState *dev)
+{
+}
 
 #define TYPE_STATIC_PROPS "static_prop_type"
 typedef struct MyType MyType;

@@ -29,6 +29,7 @@ Architectural features
    i386/xen
    i386/xenpvh
    i386/kvm-pv
+   i386/kvm-planes
    i386/sgx
    i386/amd-memory-encryption
    i386/tdx

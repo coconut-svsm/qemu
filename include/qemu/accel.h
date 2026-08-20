@@ -86,4 +86,22 @@ typedef struct AccelGdbConfig {
 
 bool accel_supports_guest_debug(AccelState *accel);
 
+/**
+ * accel_num_planes:
+ * @accel: accelerator instance
+ *
+ * Return the number of interrupt and vCPU planes supported by @accel.
+ * Accelerators without plane support expose plane 0 only.
+ */
+unsigned int accel_num_planes(AccelState *accel);
+
+/**
+ * accel_request_plane:
+ * @accel: accelerator instance
+ * @id: plane selected by the machine or a device
+ *
+ * Notify @accel that plane @id is referenced by the machine configuration.
+ */
+void accel_request_plane(AccelState *accel, unsigned int id);
+
 #endif /* QEMU_ACCEL_H */

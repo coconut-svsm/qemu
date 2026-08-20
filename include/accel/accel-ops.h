@@ -37,6 +37,8 @@ struct AccelClass {
     void (*pre_resume_vm)(AccelState *as, bool step_pending);
     bool (*has_memory)(AccelState *accel, AddressSpace *as,
                        hwaddr start_addr, hwaddr size);
+    unsigned int (*num_planes)(AccelState *accel);
+    void (*request_plane)(AccelState *accel, unsigned int id);
 
     bool *allowed;
     /*

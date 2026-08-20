@@ -4097,6 +4097,18 @@ static bool kvm_accel_has_memory(AccelState *accel, AddressSpace *as,
     return false;
 }
 
+static unsigned int kvm_accel_num_planes(AccelState *accel)
+{
+    KVMState *s = KVM_STATE(accel);
+    int count = kvm_vm_check_extension(s, KVM_CAP_PLANES);
+
+    if (count < 1) {
+        return 1;
+    }
+
+    return MIN((unsigned int)count, (unsigned int)KVM_MAX_PLANES);
+}
+
 static void kvm_get_kvm_shadow_mem(Object *obj, Visitor *v,
                                    const char *name, void *opaque,
                                    Error **errp)
@@ -4276,6 +4288,7 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
     ac->init_machine = kvm_init;
     ac->rebuild_guest = kvm_reset_vmfd;
     ac->has_memory = kvm_accel_has_memory;
+    ac->num_planes = kvm_accel_num_planes;
     ac->allowed = &kvm_allowed;
 
     object_class_property_add(oc, "kernel-irqchip", "on|off|split",

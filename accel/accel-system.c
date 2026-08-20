@@ -76,6 +76,22 @@ void accel_pre_resume(MachineState *ms, bool step_pending)
     }
 }
 
+unsigned int accel_num_planes(AccelState *accel)
+{
+    AccelClass *acc = ACCEL_GET_CLASS(accel);
+
+    return acc->num_planes ? acc->num_planes(accel) : 1;
+}
+
+void accel_request_plane(AccelState *accel, unsigned int id)
+{
+    AccelClass *acc = ACCEL_GET_CLASS(accel);
+
+    if (acc->request_plane) {
+        acc->request_plane(accel, id);
+    }
+}
+
 /* initialize the arch-independent accel operation interfaces */
 void accel_init_ops_interfaces(AccelClass *ac)
 {

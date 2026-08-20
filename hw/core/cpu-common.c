@@ -359,6 +359,7 @@ static void cpu_common_finalize(Object *obj)
     qemu_cond_destroy(cpu->halt_cond);
     g_free(cpu->halt_cond);
     g_free(cpu->thread);
+    g_free(cpu->kvm_plane_vcpus);
 }
 
 static int64_t cpu_common_get_arch_id(CPUState *cpu)

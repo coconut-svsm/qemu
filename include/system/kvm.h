@@ -176,6 +176,7 @@ typedef struct KVMCapabilityInfo {
 
 struct KVMState;
 typedef struct KVMPlane KVMPlane;
+typedef struct KVMPlaneVCPU KVMPlaneVCPU;
 
 #define TYPE_KVM_ACCEL ACCEL_CLASS_NAME("kvm")
 typedef struct KVMState KVMState;
@@ -217,6 +218,7 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...);
 int kvm_plane_ioctl(KVMPlane *plane, unsigned long type, ...);
 KVMPlane *kvm_get_plane(KVMState *s, unsigned int id);
 KVMPlane *kvm_require_plane(KVMState *s, unsigned int id, Error **errp);
+int kvm_plane_vcpu_ioctl(KVMPlaneVCPU *vcpu, unsigned long type, ...);
 
 void kvm_flush_coalesced_mmio_buffer(void);
 

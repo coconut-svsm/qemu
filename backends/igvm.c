@@ -461,17 +461,46 @@ static int qigvm_directive_page_data(QIgvm *ctx, const uint8_t *header_data,
     return 0;
 }
 
+static bool qigvm_vp_context_gpa_valid(uint64_t gpa)
+{
+    uint64_t phys_bits;
+
+    if (target_arch() != SYS_EMU_TARGET_X86_64 || !first_cpu ||
+        !object_property_find(OBJECT(first_cpu), "phys-bits")) {
+        return true;
+    }
+
+    phys_bits = object_property_get_uint(OBJECT(first_cpu), "phys-bits",
+                                         &error_abort);
+    return !phys_bits || phys_bits >= 64 ||
+           !(gpa & ~MAKE_64BIT_MASK(0, phys_bits));
+}
+
 static int qigvm_directive_vp_context(QIgvm *ctx, const uint8_t *header_data,
                                       Error **errp)
 {
     const IGVM_VHS_VP_CONTEXT *vp_context =
         (const IGVM_VHS_VP_CONTEXT *)header_data;
     IgvmHandle data_handle;
+    uint32_t data_size;
+    uint8_t *region;
     uint8_t *data;
     int result;
 
     if (!(vp_context->compatibility_mask & ctx->compatibility_mask)) {
         return 0;
+    }
+
+    /*
+     * Page-data directives are accumulated into regions and handed to the
+     * confidential guest backend only when the region is complete.  Flush the
+     * current region here so that the VP context is queued for measurement at
+     * its exact position in the directive stream.  In particular, do not let
+     * page-data batching move ordinary pages past a VMSA.
+     */
+    if (ctx->machine_state->cgs &&
+        qigvm_process_mem_page(ctx, NULL, errp) < 0) {
+        return -1;
     }
 
     data_handle = igvm_get_header_data(ctx->file, IGVM_HEADER_SECTION_DIRECTIVE,
@@ -482,6 +511,14 @@ static int qigvm_directive_vp_context(QIgvm *ctx, const uint8_t *header_data,
         return -1;
     }
 
+    data_size = igvm_get_buffer_size(ctx->file, data_handle);
+    if (ctx->machine_state->cgs && data_size != IGVM_PAGE_SIZE_4K) {
+        error_setg(errp, "IGVM: VP context data size %u not equal to page size",
+                   data_size);
+        result = -1;
+        goto exit;
+    }
+
     data = (uint8_t *)igvm_get_buffer(ctx->file, data_handle);
     if (data == NULL) {
         error_setg(errp, "IGVM: No buffer for handle %d", data_handle);
@@ -490,8 +527,22 @@ static int qigvm_directive_vp_context(QIgvm *ctx, const uint8_t *header_data,
     }
 
     if (ctx->machine_state->cgs) {
+        /* Invalid GPAs are sent unchanged for the legacy VMSA path. */
+        if (ctx->only_vp_context ||
+            !qigvm_vp_context_gpa_valid(vp_context->gpa)) {
+            region = data;
+        } else {
+            region = qigvm_prepare_memory(ctx, vp_context->gpa,
+                                          IGVM_PAGE_SIZE_4K,
+                                          ctx->current_header_index, errp);
+            if (!region) {
+                result = -1;
+                goto exit;
+            }
+            memcpy(region, data, IGVM_PAGE_SIZE_4K);
+        }
         result = ctx->cgsc->set_guest_state(
-            vp_context->gpa, data, igvm_get_buffer_size(ctx->file, data_handle),
+            vp_context->gpa, region, data_size,
             CGS_PAGE_TYPE_VMSA, vp_context->vp_index, errp);
     } else if (target_arch() == SYS_EMU_TARGET_X86_64) {
         result = qigvm_x86_set_vp_context(data, vp_context->vp_index, errp);
@@ -1001,6 +1052,7 @@ int qigvm_process_file(IgvmCfg *cfg, MachineState *machine_state,
         return -1;
     }
     ctx.file = cfg->file;
+    ctx.only_vp_context = onlyVpContext;
     trace_igvm_process_file(cfg->file, onlyVpContext);
 
     ctx.machine_state = machine_state;

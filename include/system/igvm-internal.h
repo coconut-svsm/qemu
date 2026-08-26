@@ -67,6 +67,7 @@ struct QIgvm {
     unsigned region_start_index;
     unsigned region_last_index;
     unsigned region_page_count;
+    bool only_vp_context;
 };
 
 IgvmHandle qigvm_file_init(char *filename, Error **errp);

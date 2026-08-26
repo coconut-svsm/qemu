@@ -113,6 +113,7 @@ typedef struct SevLaunchVmsa {
 
     uint16_t cpu_index;
     uint64_t gpa;
+    bool direct;
     struct sev_es_save_area vmsa;
 } SevLaunchVmsa;
 
@@ -205,6 +206,9 @@ typedef struct SevLaunchUpdateData {
 
 static QTAILQ_HEAD(, SevLaunchUpdateData) launch_update;
 
+static int snp_launch_update_data(uint64_t gpa, void *hva, size_t len,
+                                  int type, Error **errp);
+
 static Error *sev_mig_blocker;
 
 static const char *const sev_fw_errlist[] = {
@@ -278,6 +282,24 @@ sev_ioctl(int fd, int cmd, void *data, int *error)
     }
 
     return r;
+}
+
+static int
+sev_vcpu_ioctl(CPUState *cpu, int fd, int cmd, void *data, int *error)
+{
+    struct kvm_sev_cmd input = {
+        .id = cmd,
+        .sev_fd = fd,
+        .data = (uintptr_t)data,
+    };
+    int ret;
+
+    ret = kvm_vcpu_ioctl(cpu, KVM_MEMORY_ENCRYPT_OP, &input);
+    if (error) {
+        *error = input.error;
+    }
+
+    return ret;
 }
 
 static int
@@ -398,7 +420,7 @@ static void sev_apply_cpu_context(CPUState *cpu)
     /* See if an initial VMSA has been provided for this CPU */
     QTAILQ_FOREACH(launch_vmsa, &sev_common->launch_vmsa, next)
     {
-        if (cpu->cpu_index == launch_vmsa->cpu_index) {
+        if (cpu->cpu_index == launch_vmsa->cpu_index && !launch_vmsa->direct) {
             x86 = X86_CPU(cpu);
             env = &x86->env;
 
@@ -524,7 +546,21 @@ static int check_sev_features(SevCommonState *sev_common, uint64_t sev_features,
     return 0;
 }
 
-static int check_vmsa_supported(SevCommonState *sev_common, hwaddr gpa,
+static bool sev_vmsa_gpa_valid(CPUState *cpu, hwaddr gpa)
+{
+    X86CPU *x86;
+
+    if (!cpu) {
+        return false;
+    }
+
+    x86 = X86_CPU(cpu);
+
+    return !(gpa & ~MAKE_64BIT_MASK(0, x86->phys_bits));
+}
+
+static int check_vmsa_supported(SevCommonState *sev_common, CPUState *cpu,
+                                hwaddr gpa,
                                 const struct sev_es_save_area *vmsa,
                                 Error **errp)
 {
@@ -535,9 +571,10 @@ static int check_vmsa_supported(SevCommonState *sev_common, hwaddr gpa,
      * from userspace. Specifying a different GPA will not prevent the guest
      * from starting but will cause the launch measurement to be different
      * from expected. Therefore check that the provided GPA matches the KVM
-     * hardcoded value.
+     * hardcoded value. An invalid GPA is a legacy sentinel and is ignored by
+     * KVM's legacy launch path.
      */
-    if (gpa != KVM_VMSA_GPA) {
+    if (sev_vmsa_gpa_valid(cpu, gpa) && gpa != KVM_VMSA_GPA) {
         error_setg(errp,
                 "%s: The VMSA GPA must be %lX but is specified as %lX",
                 __func__, KVM_VMSA_GPA, gpa);
@@ -649,6 +686,7 @@ static int sev_set_cpu_context(uint16_t cpu_index, const void *ctx,
     {
         if (cpu_index == launch_vmsa->cpu_index) {
             launch_vmsa->gpa = gpa;
+            launch_vmsa->direct = false;
             memcpy(&launch_vmsa->vmsa, ctx, sizeof(launch_vmsa->vmsa));
             exists = true;
             break;
@@ -668,6 +706,54 @@ static int sev_set_cpu_context(uint16_t cpu_index, const void *ctx,
     sev_apply_cpu_context(cpu);
 
     return 0;
+}
+
+static int sev_set_direct_vmsa(uint16_t cpu_index, hwaddr gpa, uint8_t *ptr,
+                               uint64_t len, Error **errp)
+{
+    SevCommonState *sev_common = SEV_COMMON(MACHINE(qdev_get_machine())->cgs);
+    const struct sev_es_save_area *vmsa = (const void *)ptr;
+    SevLaunchVmsa *launch_vmsa;
+
+    if (len != TARGET_PAGE_SIZE) {
+        error_setg(errp, "SEV-SNP: VMSA must be exactly one page");
+        return -1;
+    }
+    if (!QEMU_IS_ALIGNED(gpa, TARGET_PAGE_SIZE) ||
+        QEMU_IS_ALIGNED(gpa, 2 * 1024 * 1024)) {
+        error_setg(errp, "SEV-SNP: invalid VMSA GPA 0x%" HWADDR_PRIx, gpa);
+        return -1;
+    }
+    if (!qemu_get_cpu(cpu_index)) {
+        error_setg(errp, "SEV-SNP: VMSA has out of bounds CPU index %u",
+                   cpu_index);
+        return -1;
+    }
+    if (vmsa->vmpl != 0) {
+        error_setg(errp, "SEV-SNP: VMSA must use VMPL 0");
+        return -1;
+    }
+    if (check_sev_features(sev_common, vmsa->sev_features, errp) < 0) {
+        return -1;
+    }
+
+    QTAILQ_FOREACH(launch_vmsa, &sev_common->launch_vmsa, next) {
+        if (cpu_index == launch_vmsa->cpu_index) {
+            launch_vmsa->gpa = gpa;
+            launch_vmsa->direct = true;
+            return snp_launch_update_data(gpa, ptr, len,
+                                          KVM_SEV_SNP_PAGE_TYPE_VMSA, errp);
+        }
+    }
+
+    launch_vmsa = g_new0(SevLaunchVmsa, 1);
+    launch_vmsa->cpu_index = cpu_index;
+    launch_vmsa->gpa = gpa;
+    launch_vmsa->direct = true;
+    QTAILQ_INSERT_TAIL(&sev_common->launch_vmsa, launch_vmsa, next);
+
+    return snp_launch_update_data(gpa, ptr, len,
+                                  KVM_SEV_SNP_PAGE_TYPE_VMSA, errp);
 }
 
 bool
@@ -1167,6 +1253,7 @@ snp_page_type_to_str(int type)
 {
     switch (type) {
     case KVM_SEV_SNP_PAGE_TYPE_NORMAL: return "Normal";
+    case KVM_SEV_SNP_PAGE_TYPE_VMSA: return "VMSA";
     case KVM_SEV_SNP_PAGE_TYPE_ZERO: return "Zero";
     case KVM_SEV_SNP_PAGE_TYPE_UNMEASURED: return "Unmeasured";
     case KVM_SEV_SNP_PAGE_TYPE_SECRETS: return "Secrets";
@@ -1608,6 +1695,7 @@ sev_snp_launch_finish(SevCommonState *sev_common)
     int ret, error;
     OvmfSevMetadata *metadata;
     SevLaunchUpdateData *data;
+    SevLaunchVmsa *launch_vmsa;
     SevSnpGuestState *sev_snp = SEV_SNP_GUEST(sev_common);
     struct kvm_sev_snp_launch_finish *finish = &sev_snp->kvm_finish_conf;
 
@@ -1636,6 +1724,27 @@ sev_snp_launch_finish(SevCommonState *sev_common)
     QTAILQ_FOREACH(data, &launch_update, next) {
         ret = sev_snp_launch_update(sev_snp, data);
         if (ret) {
+            exit(1);
+        }
+    }
+
+    QTAILQ_FOREACH(launch_vmsa, &sev_common->launch_vmsa, next) {
+        struct kvm_sev_snp_vcpu_state state = {
+            .valid_fields = KVM_SEV_SNP_VCPU_STATE_VMSA_VALID,
+            .vmsa_gpa = launch_vmsa->gpa,
+        };
+        CPUState *cpu;
+
+        if (!launch_vmsa->direct) {
+            continue;
+        }
+
+        cpu = qemu_get_cpu(launch_vmsa->cpu_index);
+        ret = sev_vcpu_ioctl(cpu, sev_common->sev_fd,
+                             KVM_SEV_SNP_SET_VCPU_STATE, &state, &error);
+        if (ret) {
+            error_report("SNP_SET_VCPU_STATE ret=%d fw_error=%d CPU=%u",
+                         ret, error, launch_vmsa->cpu_index);
             exit(1);
         }
     }
@@ -2551,6 +2660,7 @@ static int cgs_set_guest_state(hwaddr gpa, uint8_t *ptr, uint64_t len,
 {
     SevCommonState *sev_common = SEV_COMMON(MACHINE(qdev_get_machine())->cgs);
     SevCommonStateClass *klass = SEV_COMMON_GET_CLASS(sev_common);
+    CPUState *cpu;
 
     if (sev_common->state == SEV_STATE_UNINIT) {
         /* Pre-processing of IGVM file called from sev_common_kvm_init() */
@@ -2589,7 +2699,13 @@ static int cgs_set_guest_state(hwaddr gpa, uint8_t *ptr, uint64_t len,
                        __func__);
             return -1;
         }
-        if (check_vmsa_supported(sev_common, gpa,
+        cpu = qemu_get_cpu(cpu_index);
+        if (sev_snp_enabled() && cpu &&
+            kvm_vm_check_extension(kvm_state, KVM_CAP_SNP_VCPU_STATE) &&
+            sev_vmsa_gpa_valid(cpu, gpa)) {
+            return sev_set_direct_vmsa(cpu_index, gpa, ptr, len, errp);
+        }
+        if (check_vmsa_supported(sev_common, cpu, gpa,
                                  (const struct sev_es_save_area *)ptr,
                                  errp) < 0) {
             return -1;

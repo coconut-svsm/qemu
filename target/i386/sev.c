@@ -44,6 +44,7 @@
 #include "confidential-guest.h"
 #include "hw/i386/pc.h"
 #include "system/address-spaces.h"
+#include "system/igvm.h"
 #include "system/ramlist.h"
 #include "hw/i386/e820_memory_layout.h"
 #include "qemu/queue.h"
@@ -571,13 +572,12 @@ static int check_vmsa_supported(SevCommonState *sev_common, CPUState *cpu,
      * from userspace. Specifying a different GPA will not prevent the guest
      * from starting but will cause the launch measurement to be different
      * from expected. Therefore check that the provided GPA matches the KVM
-     * hardcoded value. An invalid GPA is a legacy sentinel and is ignored by
+     * hardcoded value. KVM_VMSA_GPA is a legacy sentinel and is ignored by
      * KVM's legacy launch path.
      */
-    if (sev_vmsa_gpa_valid(cpu, gpa) && gpa != KVM_VMSA_GPA) {
-        error_setg(errp,
-                "%s: The VMSA GPA must be %lX but is specified as %lX",
-                __func__, KVM_VMSA_GPA, gpa);
+    if (!sev_vmsa_gpa_valid(cpu, gpa) &&
+        gpa != KVM_VMSA_GPA) {
+        error_setg(errp, "SEV: invalid VMSA GPA 0x%" HWADDR_PRIx, gpa);
         return -1;
     }
 

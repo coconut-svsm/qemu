@@ -34,6 +34,9 @@
 #define IGVM_VHT_OPTIONAL_BIT (1U << 31)
 #endif
 
+/* Hard coded GPA that KVM uses for the VMSA */
+#define KVM_VMSA_GPA 0xFFFFFFFFF000
+
 /*
  * Bit 31 of the variable header type indicates that the header is
  * optional and can be safely ignored by a loader that does not
@@ -527,9 +530,18 @@ static int qigvm_directive_vp_context(QIgvm *ctx, const uint8_t *header_data,
     }
 
     if (ctx->machine_state->cgs) {
-        /* Invalid GPAs are sent unchanged for the legacy VMSA path. */
+        if (!ctx->only_vp_context &&
+            !qigvm_vp_context_gpa_valid(vp_context->gpa) &&
+            vp_context->gpa != KVM_VMSA_GPA) {
+            error_setg(errp, "IGVM: invalid VP context GPA 0x%" PRIx64,
+                       vp_context->gpa);
+            result = -1;
+            goto exit;
+        }
+
+        /* The invalid VMSA GPA selects the legacy VMSA path. */
         if (ctx->only_vp_context ||
-            !qigvm_vp_context_gpa_valid(vp_context->gpa)) {
+            vp_context->gpa == KVM_VMSA_GPA) {
             region = data;
         } else {
             region = qigvm_prepare_memory(ctx, vp_context->gpa,

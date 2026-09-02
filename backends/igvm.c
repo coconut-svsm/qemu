@@ -205,6 +205,11 @@ static int qigvm_handler(QIgvm *ctx, IgvmVariableHeaderType raw_type,
         return result;
     }
 
+    /* Safe to ignore: QEMU does not inject an IGVM command line */
+    if (type == IGVM_VHT_COMMAND_LINE) {
+        return 0;
+    }
+
     if (igvm_vht_optional(raw_type)) {
         warn_report("IGVM: Skipping unsupported optional header type 0x%"
                     PRIX32, type);

@@ -27,6 +27,11 @@ struct IgvmCfg {
      *           format.
      */
     char *filename;
+    /*
+     * cmdline: Command line for the software loaded from the IGVM file,
+     *          if it asks for one.
+     */
+    char *cmdline;
     IgvmHandle file;
     ResettableState reset_state;
 };
@@ -44,6 +49,7 @@ typedef struct QIgvmParameterData {
  */
 struct QIgvm {
     IgvmHandle file;
+    const char *cmdline;
     MachineState *machine_state;
     ConfidentialGuestSupportClass *cgsc;
     uint32_t compatibility_mask;
